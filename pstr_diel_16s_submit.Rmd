@@ -1,0 +1,2216 @@
+---
+title: "16s_curacao"
+author: "Brad Weiler"
+date: "2023-10-04"
+---
+
+
+#Load in required programs for the pipeline 
+```{r, warning=FALSE}
+library("devtools"); packageVersion("devtools")
+library("phyloseq"); packageVersion("phyloseq")
+library("dada2"); packageVersion("dada2")
+library("Biostrings"); packageVersion("Biostrings")
+library("ggplot2"); packageVersion("ggplot2")
+library("ALDEx2");packageVersion("ALDEx2")
+library("vegan"); packageVersion("vegan")
+library("viridis"); packageVersion("viridis")
+library("tidyr"); packageVersion("tidyr")
+library("dplyr"); packageVersion("dplyr")
+library("scales"); packageVersion("scales")
+library("grid"); packageVersion("grid")
+library("reshape2"); packageVersion("reshape2")
+library("edgeR"); packageVersion("edgeR")
+library("plyr"); packageVersion("plyr")
+library("DESeq2"); packageVersion("DESeq2")
+library("gridExtra"); packageVersion("gridExtra")
+library("ampvis2"); packageVersion("ampvis2")
+library("phangorn"); packageVersion("phangorn")
+library("msa"); packageVersion("msa")
+library("ape"); packageVersion("ape")
+library("Rcpp"); packageVersion("Rcpp")
+library("DECIPHER"); packageVersion("DECIPHER")
+library("ggpubr"); packageVersion("ggpubr")
+library("knitr"); packageVersion("knitr")
+library("RColorBrewer"); packageVersion("RColorBrewer")
+library("microbiome"); packageVersion("microbiome")
+library("ggjoy"); packageVersion("ggjoy")
+library("ggstance"); packageVersion("ggstance")
+library("ggridges"); packageVersion("ggridges")
+library("ggtree"); packageVersion("ggtree")
+library("QsRutils"); packageVersion("QsRutils")
+library("phytools"); packageVersion("phytools")
+library("nlme"); packageVersion("nlme")
+library("tidyverse"); packageVersion("tidyverse")
+library("compositions"); packageVersion("compositions")
+library("ANCOMBC"); packageVersion("ANCOMBC")
+library("DT"); packageVersion("DT")
+library("tibble"); packageVersion("tibble")
+library("caret"); packageVersion("caret")
+library("htmlwidgets"); packageVersion("htmlwidgets")
+library("circlize"); packageVersion("circlize")
+library("webshot"); packageVersion("webshot")
+library("microeco"); packageVersion("microeco")
+library("file2meco"); packageVersion("file2meco")
+library("rgexf"); packageVersion("rgexf")
+library("igraph"); packageVersion("igraph")
+library("NetCoMi"); packageVersion("NetCoMi")
+library("RColorBrewer")
+library("LaCroixColoR")
+library("decontam")
+library("ggplot2")
+library("phyloseq")
+library("shadowtext")
+library("ggtree")
+library("ggtreeExtra")
+library("treeio")
+library("tidytree")
+library("see")
+library("gghalves")
+
+```
+
+##################################################################################
+##                          Build Phyloseq/Filter                               ##
+##################################################################################
+#Build Phyloseq Object
+```{r}
+library(phyloseq); packageVersion("phyloseq")
+SV <- read.table("/path/to/data/curacao/metabarcoding/data/exported_files/16s_expfiles_diel/ASVs_counts.tsv", row.names = 1, check.names= FALSE, sep = "\t", header = TRUE)
+tax <-as.matrix(read.table("/path/to/data/curacao/metabarcoding/data/exported_files/16s_expfiles_diel/ASVs_taxonomy.tsv", row.names = 1, header = TRUE, sep = "\t", fill=TRUE))
+map <- read.delim("/path/to/data/curacao/metabarcoding/data/curacao_mapping.txt", sep ="\t", header = TRUE, row.names = 1)
+#library(read.table)
+#tree <- ape::read.tree(file = "/path/to/data/curacao/metabarcoding/data/trees/16s_diel_tree.nw")
+
+library(dplyr)
+map <- filter(map, project=='Diel') %>% .[,colSums(is.na(map))<nrow(map)]
+
+#Without a tree
+ps_diel = phyloseq(otu_table(SV, taxa_are_rows=TRUE), 
+               sample_data(map), 
+               phyloseq::tax_table(tax))
+
+##################################################################################################################################
+#PLASTIDS
+#library(phyloseq); packageVersion("phyloseq")
+SV_pr2 <- read.table("/path/to/data/curacao/metabarcoding/data/exported_files/16s_expfiles_diel_pr2/ASVs_counts.tsv", row.names = 1, check.names= FALSE, sep = "\t", header = TRUE)
+tax_pr2 <-as.matrix(read.table("/path/to/data/curacao/metabarcoding/data/exported_files/16s_expfiles_diel_pr2/ASVs_taxonomy.tsv", row.names = 1, header = TRUE, sep = "\t", fill=TRUE))
+map <- read.delim("/path/to/data/curacao/metabarcoding/data/curacao_mapping.txt", sep ="\t", header = TRUE, row.names = 1)
+#tree <- read.tree(file = "/path/to/data/coralmeta/data/pegasus/single/tree.nw")
+
+#Set to the project you want to explore
+library(dplyr)
+map <- filter(map, project=='Diel') %>% .[,colSums(is.na(map))<nrow(map)]
+
+ps_plas = phyloseq(otu_table(SV_pr2, taxa_are_rows=TRUE), 
+               sample_data(map), 
+               phyloseq::tax_table(tax_pr2))
+
+
+##################################################################################################################################
+
+
+#NETWORK 16S/18S Compiled with already filtered otu and tax tables
+library(phyloseq); packageVersion("phyloseq")
+SV_network <- read.table("/path/to/data/curacao/metabarcoding/data/16S_18S_Network/diel/network_otus.csv", row.names = 1, check.names= FALSE, sep = ",", header = TRUE)
+tax_network <-as.matrix(read.table("/path/to/data/curacao/metabarcoding/data/16S_18S_Network/diel/network_tax.csv", row.names = 1, header = TRUE, sep = ",", fill=TRUE))
+map <- read.delim("/path/to/data/curacao/metabarcoding/data/curacao_mapping.txt", sep ="\t", header = TRUE, row.names = 1)
+#library(read.table)
+#tree <- ape::read.tree(file = "/path/to/data/curacao/metabarcoding/data/trees/16s_diel_tree.nw")
+
+library(dplyr)
+map <- filter(map, project=='Diel') %>% .[,colSums(is.na(map))<nrow(map)]
+
+
+########TIMEPOINTS
+
+pstr12a <- subset_samples(pstr_all_network, pstr_all_network@sam_data$diel_time=='T12A')
+
+pstr6a <- subset_samples(pstr_all_network, pstr_all_network@sam_data$diel_time=='T6A')
+
+pstr12p <- subset_samples(pstr_all_network, pstr_all_network@sam_data$diel_time=='T12P')
+
+pstr6p <- subset_samples(pstr_all_network, pstr_all_network@sam_data$diel_time=='T6P')
+
+```
+
+
+#Filter phyloseq object
+```{r}
+ps_diel_filtered <- subset_taxa(ps_diel, (Order!="Chloroplast"| is.na(Order)))
+ps_diel_filtered <- subset_taxa(ps_diel_filtered, (Family!="Mitochondria"| is.na(Family)))
+ps_diel_filtered <- subset_taxa(ps_diel_filtered, (Class!="Embryophyceae"| is.na(Class)))
+ps_diel_filtered <- subset_taxa(ps_diel_filtered, (Kingdom!="Eukaryota"| is.na(Kingdom)))
+f1<- filterfun_sample(topf(0.99))
+wh1 <- genefilter_sample(ps_diel_filtered, f1, A=2)
+ps_diel_filtered <- prune_taxa(wh1, ps_diel_filtered)
+
+ps_diel_filtered <- prune_samples(sample_sums(ps_diel_filtered)>=250, ps_diel_filtered)
+ps_diel_filtered
+
+#ARCHAEA
+ps_diel_archaea<- subset_taxa(ps_diel_filtered, (Kingdom=="Archaea" | is.na(Kingdom)))
+ps_diel_archaea
+
+#PLASTIDS
+ps_plas <- subset_taxa(ps_plas, (Domain=="Eukaryota:plas"))
+ps_plas <- subset_taxa(ps_plas, (Division!="Streptophyta:plas"| is.na(Class)))
+ps_plas <- subset_taxa(ps_plas, (Order!="Embryophyceae"| is.na(Class)))
+#ps_chloro <- subset_taxa(ps, (Order=="Chloroplast"))
+ps_plas
+#Optional Chloro (3283 ASVs to 748 ASVs)
+f1<- filterfun_sample(topf(0.99))
+whplas <- genefilter_sample(ps_plas, f1, A=2)
+ps_plas_filtered <- prune_taxa(whplas, ps_plas)
+
+```
+
+
+#clean taxonomy table **ps_diel_filtered
+```{r}
+library(stringr)
+tax.clean <- ps_diel_filtered@tax_table
+
+tax.clean <- data.frame(row.names = row.names(ps_diel_filtered@tax_table),
+Kingdom = str_replace(ps_diel_filtered@tax_table[,1], "D_0__",""),
+Phylum = str_replace(ps_diel_filtered@tax_table[,2], "D_1__",""),
+Class = str_replace(ps_diel_filtered@tax_table[,3], "D_2__",""),
+Order = str_replace(ps_diel_filtered@tax_table[,4], "D_3__",""),
+Family = str_replace(ps_diel_filtered@tax_table[,5], "D_4__",""),
+Genus = str_replace(ps_diel_filtered@tax_table[,6], "D_5__",""),
+Species = str_replace(ps_diel_filtered@tax_table[,7], "D_6__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == ""){kingdom <- paste(tax.clean[i,1],"_X", sep = "")
+  tax.clean[i, 2] <- kingdom
+  tax.clean[i, 3] <- paste(kingdom,"X", sep = "")
+  tax.clean[i, 4] <- paste(kingdom,"XX", sep = "")
+  tax.clean[i, 5] <- paste(kingdom,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(kingdom,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(kingdom,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == ""){phylum <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- phylum
+  tax.clean[i, 4] <- paste(phylum,"X", sep = "")
+  tax.clean[i, 5] <- paste(phylum,"XX", sep = "")
+  tax.clean[i, 6] <- paste(phylum,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(phylum,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == ""){class <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- class
+  tax.clean[i, 5] <- paste(class,"X", sep = "")
+  tax.clean[i, 6] <- paste(class,"XX", sep = "")
+  tax.clean[i, 7] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == ""){order <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- order
+  tax.clean[i, 6] <- paste(order,"X", sep = "")
+  tax.clean[i, 7] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == ""){family <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- family
+   tax.clean[i, 7] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == ""){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+
+
+tax_table(ps_diel_filtered) <- as.matrix(tax.clean)
+```
+
+#clean taxonomy table **ps_plas** for plastid data
+```{r}
+library(stringr)
+tax.clean <- ps_plas_filtered@tax_table
+
+tax.clean <- data.frame(row.names = row.names(ps_plas_filtered@tax_table),
+Domain = str_replace(ps_plas_filtered@tax_table[,1], "D_0__",""),
+Supergroup = str_replace(ps_plas_filtered@tax_table[,2], "D_1__",""),
+Division = str_replace(ps_plas_filtered@tax_table[,3], "D_2__",""),
+Subdivision = str_replace(ps_plas_filtered@tax_table[,4], "D_3__",""),
+Class = str_replace(ps_plas_filtered@tax_table[,5], "D_4__",""),
+Order = str_replace(ps_plas_filtered@tax_table[,6], "D_5__",""),
+Family = str_replace(ps_plas_filtered@tax_table[,7], "D_6__",""),
+Genus = str_replace(ps_plas_filtered@tax_table[,8], "D_7__",""),
+Species = str_replace(ps_plas_filtered@tax_table[,9], "D_8__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:9){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == ""){domain <- paste(tax.clean[i,1],"_X", sep = "")
+  tax.clean[i, 2] <- domain
+  tax.clean[i, 3] <- paste(domain,"X", sep = "")
+  tax.clean[i, 4] <- paste(domain,"XX", sep = "")
+  tax.clean[i, 5] <- paste(domain,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(domain,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(domain,"XXXXX", sep = "")
+  tax.clean[i, 8] <- paste(domain,"XXXXXX", sep = "")
+  tax.clean[i, 9] <- paste(domain,"XXXXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == ""){supergroup <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- supergroup
+  tax.clean[i, 4] <- paste(supergroup,"X", sep = "")
+  tax.clean[i, 5] <- paste(supergroup,"XX", sep = "")
+  tax.clean[i, 6] <- paste(supergroup,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(supergroup,"XXXX.", sep = "")
+  tax.clean[i, 8] <- paste(supergroup,"XXXXX", sep = "")
+  tax.clean[i, 9] <- paste(supergroup,"XXXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == ""){division <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- division
+  tax.clean[i, 5] <- paste(division,"X", sep = "")
+  tax.clean[i, 6] <- paste(division,"XX", sep = "")
+  tax.clean[i, 7] <- paste(division,"XXX", sep = "")
+  tax.clean[i, 8] <- paste(division,"XXXX", sep = "")
+  tax.clean[i, 9] <- paste(division,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == ""){subdivision <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- subdivision
+  tax.clean[i, 6] <- paste(subdivision,"X", sep = "")
+  tax.clean[i, 7] <- paste(subdivision,"XX", sep = "")
+  tax.clean[i, 8] <- paste(subdivision,"XXX", sep = "")
+  tax.clean[i, 9] <- paste(subdivision,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == ""){class <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- class
+  tax.clean[i, 7] <- paste(class,"X", sep = "")
+  tax.clean[i, 8] <- paste(class,"XX", sep = "")
+  tax.clean[i, 9] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == ""){order <- paste(tax.clean[i,6], "_X", sep = "")
+  tax.clean[i, 7] <- order
+  tax.clean[i, 8] <- paste(order,"X", sep = "")
+  tax.clean[i, 9] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,8] == ""){family <- paste(tax.clean[i,7], "_X", sep = "")
+  tax.clean[i, 8] <- family
+  tax.clean[i, 9] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,9] == ""){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+
+
+tax_table(ps_plas_filtered) <- as.matrix(tax.clean)
+```
+
+#export tax tables to infer phylogeny in plots
+```{r}
+write.csv(ps_diel_filtered@tax_table, "/path/to/data/curacao/metabarcoding/data/16s_diel/16s_filtered_taxtable.csv")
+```
+
+#Subset phyloseq objects 
+```{r}
+#DIEL
+diel <- ps_diel_filtered
+
+diel_w <- subset_samples(diel, diel@sam_data$host=='Water')
+
+diel_pstrw <- subset_samples(diel, diel@sam_data$host=='Pseudodiploria strigosa' |
+                                      diel@sam_data$host=='Water')
+
+diel_pstr <- subset_samples(diel, diel@sam_data$host=='Pseudodiploria strigosa')
+diel_pstr <- prune_taxa(taxa_sums(diel_pstr) > 0, diel_pstr)
+
+#PLASTIDS
+diel_pstrw_plas <- subset_samples(ps_plas_filtered, ps_plas_filtered@sam_data$host=='Pseudodiploria strigosa' |
+                                      ps_plas_filtered@sam_data$host=='Water')
+
+diel_pstr_plas <- subset_samples(ps_plas_filtered, ps_plas_filtered@sam_data$host=='Pseudodiploria strigosa')
+diel_water_plas <- subset_samples(ps_plas_filtered, ps_plas_filtered@sam_data$host=='Water')
+
+
+##################################################################################
+##################################################################################
+###                                  Ordering                                  ###
+##################################################################################
+##################################################################################
+library(dplyr)
+#Bacterial Taxonomy
+bact_class <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_bact_class.txt",header=F)
+bactclass <- bact_class %>% pull(V1)
+bact_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_bact_order.txt",header=F)
+bactorder <- bact_order %>% pull(V1)
+bact_family <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_bact_family.txt",header=F)
+bactfamily <- bact_family %>% pull(V1)
+bact_genus <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_bact_genus.txt",header=F)
+bactgenus <- bact_genus %>% pull(V1)
+bact_species <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_bact_species.txt",header=F)
+bactspecies <- bact_genus %>% pull(V1)
+
+#Plastid Taxonomy
+plast_species <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_plast_species.txt",header=F)
+plast_species <- plast_species %>% pull(V1)
+plast_genus <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_plast_genus.txt",header=F)
+plast_genus <- plast_genus %>% pull(V1)
+plast_family <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_plast_family.txt",header=F)
+plast_family <- plast_family %>% pull(V1)
+plast_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_plast_order.txt",header=F)
+plast_order <- plast_order %>% pull(V1)
+plast_class <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_plast_class.txt",header=F)
+plast_class <- plast_class %>% pull(V1)
+plast_subdivision <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_plast_subdivision.txt",header=F)
+plast_subdivision <- plast_subdivision %>% pull(V1)
+
+#By Structure
+time_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/time_order.txt",header=F)
+timeorder <- time_order %>% pull(V1)
+daytime_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/daytime_order.txt",header=F)
+daytimeorder <- daytime_order %>% pull(V1)
+diel_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/diel_order.txt",header=F)
+dielorder <- diel_order %>% pull(V1)
+dielpstr_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/dielpstr_order.txt",header=F)
+dielpstrorder <- dielpstr_order %>% pull(V1)
+dielpstr_day_order <- read.csv("/path/to/data/curacao/metabarcoding/data/ordering/dielpstr_day_order.txt",header=F)
+dielpstrdayorder <- dielpstr_day_order %>% pull(V1)
+```
+
+
+
+#SUBSET PHYLOSEQ FOR SUBPHYLO OTU EXPLORATION
+```{r}
+#PSTR
+#OTU Tables extraction
+OTU = as(otu_table(diel_pstr), "matrix") 
+OTU = t(OTU)
+OTU = as.data.frame(OTU)
+write.table(OTU, file = "/path/to/data/curacao/data/16s_diel/pstr/diel_pstr_otutable.tsv")
+#TAX Table extraction
+TAX = as(tax_table(diel_pstr), "matrix")
+TAX = as.data.frame(TAX)
+write.table(TAX, file = "/path/to/data/curacao/data/16s_diel/pstr/diel_pstr_taxtable.tsv")
+#OTU Table w/ Tax Assignment extraction
+OTU <- tibble::rownames_to_column(OTU, "ASV")
+TAX <- tibble::rownames_to_column(TAX, "ASV")
+OTUTAX<- merge(OTU, TAX, by= "ASV")
+write.table(OTUTAX, file = "/path/to/data/curacao/data/16s_diel/pstr/diel_pstr_otutaxtable.tsv")
+#write.table(OTUTAX, file = "~/Desktop/diel_pstr_otutaxtable.tsv")
+```
+
+##################################################################################
+##                            Colour Palettes                                   ##
+##################################################################################
+
+# Colour Palettes
+```{r}
+library(randomcoloR)
+n <- 64
+palette <- distinctColorPalette(n)
+c28 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", "gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown", "firebrick3", "darkslategray", "gray0"
+)
+
+
+day_palette <- c("midnightblue", "gold")
+diel_palette <- c("midnightblue", "slategray", "gold", "orange")
+diel_palette_ordered <- c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange")
+
+safe_colorblind_palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
+                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+                             
+
+palette_all <- c("honeydew", "honeydew1", "honeydew2", "honeydew3", "honeydew4", "hotpink", "hotpink1", "hotpink2", "hotpink3", "hotpink4", "indianred", "indianred1", "indianred2", "indianred3", "indianred4", "ivory", "ivory1", "ivory2", "ivory3", "ivory4", "khaki", "khaki1", "khaki2", "khaki3", "khaki4", "lavender", "lavenderblush", "lavenderblush1", "lavenderblush2", "lavenderblush3", "lavenderblush4", "lawngreen", "lemonchiffon", "lemonchiffon1", "lemonchiffon2", "lemonchiffon3", "lemonchiffon4", "lightblue", "lightblue1", "lightblue2", "lightblue3", "lightblue4", "lightcoral", "lightcyan", "lightcyan1", "lightcyan2", "lightcyan3", "lightcyan4", "lightgoldenrod", "lightgoldenrod1", "lightgoldenrod2", "lightgoldenrod3", "lightgoldenrod4", "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightpink1", "lightpink2", "lightpink3", "lightpink4", "lightsalmon", "lightsalmon1", "lightsalmon2", "lightsalmon3", "lightsalmon4", "lightseagreen", "lightskyblue", "lightskyblue1", "lightskyblue2", "lightskyblue3", "lightskyblue4", "lightslateblue", "lightslategray", "lightslategrey", "lightsteelblue", "lightsteelblue1", "lightsteelblue2", "lightsteelblue3", "lightsteelblue4", "lightyellow", "lightyellow1", "lightyellow2", "lightyellow3", "lightyellow4", "limegreen", "linen", "magenta", "magenta1", "magenta2", "magenta3", "magenta4", "maroon", "maroon1", "maroon2", "maroon3", "maroon4", "mediumaquamarine", "mediumblue", "mediumorchid", "mediumorchid1", "mediumorchid2", "mediumorchid3", "mediumorchid4", "mediumpurple", "mediumpurple1", "mediumpurple2", "mediumpurple3", "mediumpurple4", "mediumseagreen", "mediumslateblue", "mediumspringgreen", "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "mistyrose1", "mistyrose2", "mistyrose3", "mistyrose4", "moccasin", "navajowhite", "navajowhite1", "navajowhite2", "navajowhite3", "navajowhite4", "navy", "navyblue", "oldlace", "olivedrab", "olivedrab1", "olivedrab2", "olivedrab3", "olivedrab4", "orange", "orange1", "orange2", "orange3", "orange4", "orangered", "orangered1", "orangered2", "orangered3", "orangered4", "orchid", "orchid1", "orchid2", "orchid3", "orchid4", "palegoldenrod", "palegreen", "palegreen1", "palegreen2", "palegreen3", "palegreen4", "paleturquoise", "paleturquoise1", "paleturquoise2", "paleturquoise3", "paleturquoise4", "palevioletred", "palevioletred1", "palevioletred2", "palevioletred3", "palevioletred4", "papayawhip", "peachpuff", "peachpuff1", "peachpuff2", "peachpuff3", "peachpuff4", "peru", "pink", "pink1", "pink2", "pink3", "pink4", "plum", "plum1", "plum2", "plum3", "plum4", "powderblue", "purple", "purple1", "purple2", "purple3", "purple4", "red", "red1", "red2", "red3", "red4", "rosybrown", "rosybrown1", "rosybrown2", "rosybrown3", "rosybrown4", "royalblue", "royalblue1", "royalblue2", "royalblue3", "royalblue4", "saddlebrown", "salmon", "salmon1", "salmon2", "salmon3", "salmon4", "sandybrown", "seagreen", "seagreen1", "seagreen2", "seagreen3", "seagreen4", "seashell", "seashell1", "seashell2", "seashell3", "seashell4", "sienna", "sienna1", "sienna2", "sienna3", "sienna4", "skyblue", "skyblue1", "skyblue2", "skyblue3", "skyblue4", "slateblue", "slateblue1", "slateblue2", "slateblue3", "slateblue4", "slategray", "slategray1", "slategray2", "slategray3", "slategray4", "slategrey", "snow", "snow1", "snow2", "snow3", "snow4", "springgreen", "springgreen1", "springgreen2", "springgreen3", "springgreen4", "steelblue", "steelblue1", "steelblue2", "steelblue3", "steelblue4", "tan", "tan1", "tan2", "tan3", "tan4", "thistle", "thistle1", "thistle2", "thistle3", "thistle4", "tomato", "tomato1", "tomato2", "tomato3", "tomato4", "turquoise", "turquoise1", "turquoise2", "turquoise3", "turquoise4", "violet", "violetred", "violetred1", "violetred2", "violetred3", "violetred4", "wheat", "wheat1", "wheat2", "wheat3", "wheat4", "whitesmoke", "yellow", "yellow1", "yellow2", "yellow3", "yellow4", "yellowgreen")
+
+
+plassubdiv_palette <- c("Other"="slategrey","Gyrista:plas"="#DDCC77","Chrompodellids:plas"="#999933","Haptophyta_X:plas"="#661100","Chlorophyta_X:plas"="#6699CC")
+
+```
+
+
+##################################################################################
+##################################################################################
+##                                     Stats                                    ##
+##################################################################################
+##################################################################################
+
+##################################################################################
+##                                    Alpha                                     ##
+##################################################################################
+
+#PSTR  **SHANNON**
+```{r}
+ad_pstr <- prune_taxa(taxa_sums(diel_pstr) > 0, diel_pstr)
+tab.shan <- microbiome::alpha(ad_pstr, index = "diversity_shannon")
+kable(head(tab.shan))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab.shan$diversity_shannon 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_shan <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Shannon)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_pvalue_manual(Shannon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,6) +
+                            ylab("Shannon Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) #+
+                            #stat_compare_means(comparisons = fam.pairs) 
+                            
+                        
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/alpha/pstr_dieltime_alpha_shannon_clean_ylim.pdf", width = 6, height = 6)
+pstr_dieltime_shan
+dev.off()
+```
+
+#PSTR CHLORO ONLY **SHANNON**
+```{r}
+
+ad_pstr_plas <- prune_taxa(taxa_sums(diel_pstr_plas) > 0, diel_pstr_plas)
+tab.shan <- microbiome::alpha(ad_pstr_plas, index = "diversity_shannon")
+kable(head(tab.shan))
+
+ps1.meta <- meta(ad_pstr_plas)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab.shan$diversity_shannon 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_plas_dieltime_shan <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Shannon)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_pvalue_manual(Shannon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylab("Shannon Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) #+
+                            #stat_compare_means(comparisons = fam.pairs) 
+                            
+                        
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/alpha/pstr_plas_dieltime_alpha_shannon_clean.pdf", width = 6, height = 6)
+pstr_plas_dieltime_shan
+dev.off()
+```
+
+#PSTR **rich**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(diel_pstr) > 0, diel_pstr)
+tab.rich <- richness(ad_pstr)
+kable(head(tab.rich))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Richness <- tab.rich$observed
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_rich <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Richness)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_pvalue_manual(richnon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,2500) +
+                            ylab("Richness Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) #+
+                            #stat_compare_means(comparisons = fam.pairs) 
+                            
+                        
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/alpha/pstr_dieltime_alpha_rich_clean_ylim.pdf", width = 6, height = 6)
+pstr_dieltime_rich
+dev.off()
+```
+
+#PSTR CHLORO ONLY **rich**
+```{r}
+
+ad_pstr_plas <- prune_taxa(taxa_sums(diel_pstr_plas) > 0, diel_pstr_plas)
+tab.rich <- richness(ad_pstr_plas)
+kable(head(tab.rich))
+
+ps1.meta <- meta(ad_pstr_plas)
+kable(head(ps1.meta))
+ps1.meta$Richness <- tab.rich$observed 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_plas_dieltime_rich <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Richness)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_pvalue_manual(richnon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylab("Richness Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) #+
+                            #stat_compare_means(comparisons = fam.pairs) 
+                            
+                        
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/alpha/pstr_plas_dieltime_alpha_rich_clean.pdf", width = 6, height = 6)
+pstr_plas_dieltime_rich
+dev.off()
+
+```
+
+#PSTR **SHANNON** **WATER**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(diel_w) > 0, diel_w)
+tab.shan <- microbiome::alpha(ad_pstr, index = "diversity_shannon")
+kable(head(tab.shan))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab.shan$diversity_shannon 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_shan <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Shannon)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_compare_means(comparisons = fam.pairs) +
+                            #stat_pvalue_manual(Shannon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,10) +
+                            ylab("Shannon Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+                            
+                        
+
+pdf("/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Diel PSTR (Data)/analysis/pstr_16s_diel/alpha/pstr_dieltime_alpha_shannon_ylim_water.pdf", width = 6, height = 6)
+pstr_dieltime_shan
+dev.off()
+```
+
+
+#PSTR **rich** **WATER**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(diel_w) > 0, diel_w)
+tab.rich <- richness(ad_pstr)
+kable(head(tab.rich))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Richness <- tab.rich$observed
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_rich <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Richness)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_compare_means(comparisons = fam.pairs) +
+                            #stat_pvalue_manual(richnon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,6000) +
+                            ylab("Richness Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1))
+                            
+                        
+
+pdf("/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Diel PSTR (Data)/analysis/pstr_16s_diel/alpha/pstr_dieltime_alpha_rich_ylim_water.pdf", width = 6, height = 6)
+pstr_dieltime_rich
+dev.off()
+```
+
+
+##################################################################################
+##################################################################################
+##                                 Aitchison PCA                                ##
+##################################################################################
+##################################################################################
+
+#################################################################################
+##############                        PSTR                         ##############
+#################################################################################
+
+#PCA 
+```{r}
+pstr_clr <- microbiome::transform(diel_pstr, 'clr', shift = 1)
+
+pstr_clr.ord <- ordinate(pstr_clr, "RDA", "euclidean")
+
+#pca_pstr_title <- expression(paste("16s Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_pstr_diel = plot_ordination(pstr_clr, pstr_clr.ord, 
+                                    shape=1,
+                                    color="diel_time"
+                                    ) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette_ordered) + 
+                                    stat_ellipse(lwd=1)
+
+pca_pstr_diel
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/beta/pstr_pca_dieltime_clean.pdf", width = 6, height = 6)
+pca_pstr_diel
+dev.off()
+
+library(vegan)
+library(phyloseq)
+
+# 1. Extract CLR matrix (samples x features)
+clr_mat <- as.data.frame(t(otu_table(pstr_clr)))
+
+# 2. Compute Euclidean distance (Aitchison after CLR)
+clr_dist <- dist(clr_mat, method = "euclidean")
+
+# 3. Get sample metadata as a clean data frame
+meta <- data.frame(sample_data(pstr_clr))
+meta$diel_time <- as.factor(meta$diel_time)  # ensure it's a factor
+
+# 4. PERMANOVA
+set.seed(123)
+adonis_res <- adonis2(clr_dist ~ diel_time, data = meta, permutations = 999)
+print(adonis_res)
+```
+
+
+#PCA **WATER**
+```{r}
+pstr_clr <- microbiome::transform(diel_w, 'clr', shift = 1)
+
+pstr_clr.ord <- ordinate(pstr_clr, "RDA", "euclidean")
+
+#pca_pstr_title <- expression(paste("18S Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_pstr_diel = plot_ordination(pstr_clr, pstr_clr.ord, 
+                                    shape=1,
+                                    color="diel_time"#,
+                                    #title=pca_pstr_title
+                                    ) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    #scale_colour_manual(values=diel_palette_ordered) + 
+                                    stat_ellipse(aes(color = diel_day), lwd = 1)
+
+pca_pstr_diel
+
+pdf("/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Diel PSTR (Data)/analysis/pstr_16s_diel/beta/pstr_pca_dieltime_water_ellipses.pdf", width = 6, height = 6)
+pca_pstr_diel
+dev.off()
+
+# 1. Extract CLR matrix (samples x features)
+clr_mat <- as.data.frame(t(otu_table(pstr_clr)))
+
+# 2. Compute Euclidean distance (Aitchison after CLR)
+clr_dist <- dist(clr_mat, method = "euclidean")
+
+# 3. Get sample metadata as a clean data frame
+meta <- data.frame(sample_data(pstr_clr))
+meta$diel_time <- as.factor(meta$diel_time)  # ensure it's a factor
+
+# 4. PERMANOVA
+set.seed(123)
+adonis_res <- adonis2(clr_dist ~ diel_day, data = meta, permutations = 999)
+print(adonis_res)
+```
+
+#PCA PSTR PLAS
+```{r}
+pstr_plas_clr <- microbiome::transform(diel_pstr_plas, 'clr', shift = 1)
+
+pstr_plas_clr.ord <- ordinate(pstr_plas_clr, "RDA", "euclidean")
+
+pca_pstr_plas_title <- expression(paste("Plastid Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_pstr_plas_diel = plot_ordination(pstr_clr, pstr_plas_clr.ord, 
+                                    shape=1,
+                                    color="diel_time",
+                                    title=pca_pstr_plas_title) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette_ordered) + 
+                                    stat_ellipse(lwd=1)
+
+pca_pstr_plas_diel
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/beta/pstr_plas_pca_dieltime_clean.pdf", width = 6, height = 6)
+pca_pstr_plas_diel
+dev.off()
+```
+
+
+##################################################################################
+#######                             Bubble Plots                            ######
+#######                            (Standard Dev)                           ######
+##################################################################################
+
+#################################################################################
+##############                        PSTR                         ##############
+#################################################################################
+
+# PSTR by diel time w/ STANDARD DEV **GENUS LEVEL** CLASS Colour **DONE**
+```{r}
+
+sd_diel_pstr <- diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr <- merge_samples(diel_pstr, diel_pstr@sam_data$diel_time) 
+type_taxa_diel_pstr <- bubSD_diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr <- type_taxa_diel_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr <- data.table(type_taxa_diel_pstr)
+
+dat_diel_pstr$SD <- sd_diel_pstr$sd
+# convert Class to a character vector from a factor because R
+dat_diel_pstr$Genus <- as.character(dat_diel_pstr$Genus)
+# group dataframe by Class, calculate median rel. abundance
+dat_diel_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Class less than 2%
+dat_diel_pstr[(median <= 0.1), Genus := "Below Threshold"]
+dat_diel_pstr[(Genus == "Below Threshold"), Class := "Other"]
+
+bubSD_diel_pstr_title <- expression(paste("Prokaryotic Genera within ", italic("P. strigosa")))
+
+bpSD_diel_pstr <- ggplot(dat_diel_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=bactgenus))) + geom_point(aes(size = Abundance, fill=Class, color=Class), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Prokaryotic Genus (10%)", size = "Relative Abundance %", fill="Class") + theme_bw() +  
+  #scale_fill_manual(values = eukclass_palette, breaks=c('Other', 'Bacillariophyceae', 'Syndiniales', 'Dinophyceae',   'Oligohymenophorea', 'Coccidiomorphea', 'Ulvophyceae')) +
+  #scale_color_manual(values = eukclass_palette,breaks=c('Other', 'Bacillariophyceae', 'Syndiniales', 'Dinophyceae',   'Oligohymenophorea', 'Coccidiomorphea', 'Ulvophyceae')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  #ggtitle(label=bubSD_diel_pstr_title, subtitle = "With median relative abundance above 1%") + 
+  geom_point(aes(size=Abundance+SD, fill = Class, color=Class), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Class, color=Class), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr
+
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/community/pstr_bpSD_diel_genus_10perc_clean_newtax.pdf", width = 6, height = 12)
+bpSD_diel_pstr
+dev.off()
+```
+
+ps_diel_archaea
+# PSTR by diel time w/ STANDARD DEV **GENUS LEVEL** Endozoicomonas only
+```{r}
+
+sd_diel_pstr_archaea <- ps_diel_archaea %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr_archaea <- merge_samples(ps_diel_archaea, ps_diel_archaea@sam_data$diel_time) 
+type_taxa_diel_pstr_archaea <- bubSD_diel_pstr_archaea %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr_archaea <- type_taxa_diel_pstr_archaea %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr_archaea <- data.table(type_taxa_diel_pstr_archaea)
+
+dat_diel_pstr_archaea$SD <- sd_diel_pstr_archaea$sd
+# convert Class to a character vector from a factor because R
+dat_diel_pstr_archaea$Genus <- as.character(dat_diel_pstr_archaea$Genus)
+# group dataframe by Class, calculate median rel. abundance
+dat_diel_pstr_archaea[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Class less than 2%
+dat_diel_pstr_archaea[(median <= 0.01), Genus := "Below Threshold"]
+dat_diel_pstr_archaea[(Genus == "Below Threshold"), Class := "Other"]
+
+bubSD_diel_pstr_archaea_title <- expression(paste("Archaeal taxa within ", italic("P. strigosa")))
+
+bpSD_diel_pstr_archaea <- ggplot(dat_diel_pstr_archaea[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=bactgenus))) + geom_point(aes(size = Abundance, fill=Class, color=Class), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Archael Taxa", size = "Relative Abundance %", fill="Class") + theme_bw() +  
+  scale_fill_manual(values = safe_colorblind_palette) +
+  scale_color_manual(values = safe_colorblind_palette) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  #ggtitle(label=bubSD_diel_pstr_archaea_title, subtitle = "With median relative abundance above 1%") + 
+  geom_point(aes(size=Abundance+SD, fill = Class, color=Class), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Class, color=Class), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr_archaea
+
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/community/pstr_bpSD_diel_archaea.pdf", width = 6, height = 6)
+bpSD_diel_pstr_archaea
+dev.off()
+```
+
+# PSTR by diel time w/ STANDARD DEV **GENUS LEVEL** CLASS Colour **DONE** **WATER**
+```{r}
+#ps_diel_archaea<- subset_taxa(ps_diel_filtered, (Kingdom=="Archaea" | is.na(Kingdom)))
+diel_w_arch <- subset_taxa(diel_w, (Kingdom=="Archaea" | is.na(Kingdom)))
+
+sd_diel_w_arch <- diel_w_arch %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_w_arch <- merge_samples(diel_w_arch, diel_w_arch@sam_data$diel_time) 
+type_taxa_diel_w_arch <- bubSD_diel_w_arch %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_w_arch <- type_taxa_diel_w_arch %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_w_arch <- data.table(type_taxa_diel_w_arch)
+
+dat_diel_w_arch$SD <- sd_diel_w_arch$sd
+# convert Class to a character vector from a factor because R
+dat_diel_w_arch$Genus <- as.character(dat_diel_w_arch$Genus)
+# group dataframe by Class, calculate median rel. abundance
+dat_diel_w_arch[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Class less than 2%
+dat_diel_w_arch[(median <= 0.001), Genus := "Below Threshold"]
+dat_diel_w_arch[(Genus == "Below Threshold"), Class := "Other"]
+
+bubSD_diel_w_arch_title <- expression(paste("Prokaryotic Genera within ", italic("P. strigosa")))
+
+bpSD_diel_w_arch <- ggplot(dat_diel_w_arch[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=bactgenus))) + geom_point(aes(size = Abundance, fill=Class, color=Class), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Prokaryotic Genus (1%)", size = "Relative Abundance %", fill="Class") + theme_bw() +  
+  #scale_fill_manual(values = eukclass_palette, breaks=c('Other', 'Bacillariophyceae', 'Syndiniales', 'Dinophyceae',   'Oligohymenophorea', 'Coccidiomorphea', 'Ulvophyceae')) +
+  #scale_color_manual(values = eukclass_palette,breaks=c('Other', 'Bacillariophyceae', 'Syndiniales', 'Dinophyceae',   'Oligohymenophorea', 'Coccidiomorphea', 'Ulvophyceae')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  #ggtitle(label=bubSD_diel_w_arch_title, subtitle = "With median relative abundance above 1%") + 
+  geom_point(aes(size=Abundance+SD, fill = Class, color=Class), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Class, color=Class), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_w_arch
+
+
+pdf("/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Diel PSTR (Data)/analysis/pstr_16s_diel/community/pstr_bpSD_diel_water_arch_0.001per.pdf", width = 6, height = 3)
+bpSD_diel_w_arch
+dev.off()
+```
+
+# PSTR by diel time w/ STANDARD DEV **GENUS LEVEL PLAS**
+```{r}
+sd_diel_pstr_plas <- diel_pstr_plas %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr_plas <- merge_samples(diel_pstr_plas, diel_pstr_plas@sam_data$diel_time) 
+type_taxa_diel_pstr_plas <- bubSD_diel_pstr_plas %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr_plas <- type_taxa_diel_pstr_plas %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr_plas <- data.table(type_taxa_diel_pstr_plas)
+
+dat_diel_pstr_plas$SD <- sd_diel_pstr_plas$sd
+# convert Subdivision to a character vector from a factor because R
+dat_diel_pstr_plas$Genus <- as.character(dat_diel_pstr_plas$Genus)
+# group dataframe by Subdivision, calculate median rel. abundance
+dat_diel_pstr_plas[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Subdivision less than 2%
+dat_diel_pstr_plas[(median <= 0.01), Genus := "Below Threshold"]
+dat_diel_pstr_plas[(Genus == "Below Threshold"), Subdivision := "Other"]
+
+bubSD_diel_pstr_plas_title <- expression(paste("Genus of plastid bearing eukaryotes within ", italic("P. strigosa")))
+
+bpSD_diel_pstr_plas <- ggplot(dat_diel_pstr_plas[Abundance > 0], aes(x = factor(Sample, levels=c("T6P","T12P","T6A","T12A")), y = factor(Genus, levels=plast_genus))) + geom_point(aes(size = Abundance, fill=Subdivision, color=Subdivision), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Symbiodiniaceae Genus", size = "Relative Abundance %", fill="Subdivision") + theme_bw() +  
+  scale_fill_manual(values = plassubdiv_palette, breaks=c('Other', 'Gyrista:plas', 'Chrompodellids:plas', 'Haptophyta_X:plas', 'Chlorophyta_X:plas')) +
+  scale_color_manual(values = plassubdiv_palette,breaks=c('Other', 'Gyrista:plas', 'Chrompodellids:plas', 'Haptophyta_X:plas', 'Chlorophyta_X:plas')) +  
+  theme(axis.text.x = element_text(angle = 45, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_pstr_plas_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Subdivision, color=Subdivision), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Subdivision, color=Subdivision), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr_plas + 
+  coord_flip()
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/community/pstr_plas_bpSD_diel_genus_Subdivision.pdf", width = 8, height = 4)
+bpSD_diel_pstr_plas+ coord_flip()
+dev.off()
+```
+
+
+
+##################################################################################
+##################################################################################
+###                                   ANCOM-BC                                 ###
+##################################################################################
+##################################################################################
+
+#PSTR DAY VS NIGHT
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_day_night <- subset_samples(diel_pstr,  diel_pstr@sam_data$day_night=='day' |
+                                             diel_pstr@sam_data$day_night=='night')
+set.seed(321)
+
+ancom_pstr_day_night = ancombc2(data = pstr_day_night, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "day_night", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 1, pseudo_sens = TRUE,
+                  prv_cut = 0.001, lib_cut = 0, s0_perc = 0.05,
+                  group = "day_night", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = FALSE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                     B = 100))
+
+res_prim_pstr_day_night = ancom_pstr_day_night$res
+res_prim_pstr_day_night
+df_res_pstr_day_night = res_prim_pstr_day_night %>% dplyr::filter(`diff_day_nightnight`) %>%
+    dplyr::select(taxon, contains("day_night")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_day_night = df_res_pstr_day_night %>% 
+    arrange(desc(`lfc_day_nightnight`
+)) %>%
+    mutate(direct = ifelse(`lfc_day_nightnight`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_day_night$taxon = factor(df_fig_res_pstr_day_night$taxon, levels = df_fig_res_pstr_day_night$taxon)
+df_fig_res_pstr_day_night$direct = factor(df_fig_res_pstr_day_night$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_day_night.df = as.data.frame(df_fig_res_pstr_day_night)
+write.table(df_fig_res_pstr_day_night.df, file = "/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Diel PSTR (Data)/analysis/pstr_16s_diel/ancom/ancom_pstr_day_night.tsv")
+
+#TEST TO SUBSET THE RESULTS DOWN SHOWING ONLY THOSE SIGNIFICANT LFC
+df_fig_res_pstr_day_night_filt <- df_fig_res_pstr_day_night %>% filter(abs(lfc_day_nightnight) > 1.5 | lfc_day_nightnight < -1.5)
+
+
+fig_res_pstr_day_night = df_fig_res_pstr_day_night %>%
+    ggplot(aes(x = taxon, y = `lfc_day_nightnight`, fill = `lfc_day_nightnight`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_day_nightnight` - `se_day_nightnight`, ymax = `lfc_day_nightnight` + `se_day_nightnight`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from day to night", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma", direction = -1) + scale_color_viridis_c(option = "plasma", direction = -1) +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_day_night
+
+pdf("/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Diel PSTR (Data)/analysis/pstr_16s_diel/ancom/ancom_pstr_day_night_large.pdf", width = 10, height = 6)
+fig_res_pstr_day_night
+dev.off()
+
+
+#New Volcano Plot
+
+df_fig_res_pstr_day_night$taxon <- gsub("_X+", " IS", df_fig_res_pstr_day_night$taxon)
+df_fig_res_pstr_day_night$neg_log10_p_value <- -log10(df_fig_res_pstr_day_night$q_day_nightnight)
+significance_threshold <- -log10(0.001)
+pstr_day_night_volcano <- ggplot(df_fig_res_pstr_day_night, aes(x = `lfc_day_nightnight`, y = neg_log10_p_value)) +
+  geom_point(color = 'black') +
+  geom_point(data = filter(df_fig_res_pstr_day_night, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  #geom_text(data = filter(df_fig_res_pstr_day_night, neg_log10_p_value > significance_threshold), 
+  #          aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Taxa') +
+  theme_minimal()
+pstr_day_night_volcano
+
+```
+
+
+
+#PSTR
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_12A_6A <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T12A' |
+                                             diel_pstr@sam_data$diel_time=='T6A')
+
+ancom_pstr_12A_6A = ancombc2(data = pstr_12A_6A, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                     B = 100))
+
+res_prim_pstr_12A_6A = ancom_pstr_12A_6A$res
+res_prim_pstr_12A_6A
+df_res_pstr_12A_6A = res_prim_pstr_12A_6A %>% dplyr::filter(`diff_diel_timeT6A`) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_12A_6A = df_res_pstr_12A_6A %>% 
+    arrange(desc(`lfc_diel_timeT6A`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6A`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_12A_6A$taxon = factor(df_fig_res_pstr_12A_6A$taxon, levels = df_fig_res_pstr_12A_6A$taxon)
+df_fig_res_pstr_12A_6A$direct = factor(df_fig_res_pstr_12A_6A$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_12A_6A.df = as.data.frame(df_fig_res_pstr_12A_6A)
+write.table(df_fig_res_pstr_12A_6A.df, file = "/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_12A_6A.tsv")
+
+
+fig_res_pstr_12A_6A = df_fig_res_pstr_12A_6A %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6A`, fill = `lfc_diel_timeT6A`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6A` - `se_diel_timeT6A`, ymax = `lfc_diel_timeT6A` + `se_diel_timeT6A`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T12A to T6A", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_12A_6A
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_12A_6A.pdf", width = 13, height = 20)
+fig_res_pstr_12A_6A
+dev.off()
+
+```
+
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_6A_12P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T6A' |
+                                             diel_pstr@sam_data$diel_time=='T12P')
+
+ancom_pstr_6A_12P = ancombc2(data = pstr_6A_12P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_6A_12P = ancom_pstr_6A_12P$res
+res_prim_pstr_6A_12P
+df_res_pstr_6A_12P = res_prim_pstr_6A_12P %>% dplyr::filter(diff_diel_timeT6A) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_6A_12P = df_res_pstr_6A_12P %>% 
+    arrange(desc(`lfc_diel_timeT6A`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6A`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_6A_12P$taxon = factor(df_fig_res_pstr_6A_12P$taxon, levels = df_fig_res_pstr_6A_12P$taxon)
+df_fig_res_pstr_6A_12P$direct = factor(df_fig_res_pstr_6A_12P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_6A_12P.df = as.data.frame(df_fig_res_pstr_6A_12P)
+write.table(df_fig_res_pstr_6A_12P.df, file = "/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_6A_12P.tsv")
+
+
+fig_res_pstr_6A_12P = df_fig_res_pstr_6A_12P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6A`, fill = `lfc_diel_timeT6A`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6A` - `se_diel_timeT6A`, ymax = `lfc_diel_timeT6A` + `se_diel_timeT6A`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_6A_12P
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_6A_12P.pdf", width = 13, height = 20)
+fig_res_pstr_6A_12P
+dev.off()
+
+```
+
+
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_12P_6P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T12P' |
+                                             diel_pstr@sam_data$diel_time=='T6P')
+
+ancom_pstr_12P_6P = ancombc2(data = pstr_12P_6P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_12P_6P = ancom_pstr_12P_6P$res
+res_prim_pstr_12P_6P
+df_res_pstr_12P_6P = res_prim_pstr_12P_6P %>% dplyr::filter(diff_diel_timeT6P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_12P_6P = df_res_pstr_12P_6P %>% 
+    arrange(desc(`lfc_diel_timeT6P`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6P`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_12P_6P$taxon = factor(df_fig_res_pstr_12P_6P$taxon, levels = df_fig_res_pstr_12P_6P$taxon)
+df_fig_res_pstr_12P_6P$direct = factor(df_fig_res_pstr_12P_6P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_12P_6P.df = as.data.frame(df_fig_res_pstr_12P_6P)
+write.table(df_fig_res_pstr_12P_6P.df, file = "/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_12P_6P.tsv")
+
+
+fig_res_pstr_12P_6P = df_fig_res_pstr_12P_6P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6P`, fill = `lfc_diel_timeT6P`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6P` - `se_diel_timeT6P`, ymax = `lfc_diel_timeT6P` + `se_diel_timeT6P`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_12P_6P
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_12P_6P.pdf", width = 13, height = 20)
+fig_res_pstr_12P_6P
+dev.off()
+
+```
+
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_6P_12A <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T6P' |
+                                             diel_pstr@sam_data$diel_time=='T12A')
+
+ancom_pstr_6P_12A = ancombc2(data = pstr_6P_12A, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_6P_12A = ancom_pstr_6P_12A$res
+res_prim_pstr_6P_12A
+df_res_pstr_6P_12A = res_prim_pstr_6P_12A %>% dplyr::filter(diff_diel_timeT6P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_6P_12A = df_res_pstr_6P_12A %>% 
+    arrange(desc(`lfc_diel_timeT12A`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT12A`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_6P_12A$taxon = factor(df_fig_res_pstr_6P_12A$taxon, levels = df_fig_res_pstr_6P_12A$taxon)
+df_fig_res_pstr_6P_12A$direct = factor(df_fig_res_pstr_6P_12A$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_6P_12A.df = as.data.frame(df_fig_res_pstr_6P_12A)
+write.table(df_fig_res_pstr_6P_12A.df, file = "/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_6P_12A.tsv")
+
+
+fig_res_pstr_6P_12A = df_fig_res_pstr_6P_12A %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT12A`, fill = `lfc_diel_timeT12A`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT12A` - `se_diel_timeT12A`, ymax = `lfc_diel_timeT12A` + `se_diel_timeT12A`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_6P_12A
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_6P_12A.pdf", width = 13, height = 20)
+fig_res_pstr_6P_12A
+dev.off()
+
+```
+
+
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_12A_12P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T12A' |
+                                             diel_pstr@sam_data$diel_time=='T12P')
+
+ancom_pstr_12A_12P = ancombc2(data = pstr_12A_12P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_12A_12P = ancom_pstr_12A_12P$res
+res_prim_pstr_12A_12P
+df_res_pstr_12A_12P = res_prim_pstr_12A_12P %>% dplyr::filter(diff_diel_timeT12P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_12A_12P = df_res_pstr_12A_12P %>% 
+    arrange(desc(`lfc_diel_timeT12P`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT12P`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_12A_12P$taxon = factor(df_fig_res_pstr_12A_12P$taxon, levels = df_fig_res_pstr_12A_12P$taxon)
+df_fig_res_pstr_12A_12P$direct = factor(df_fig_res_pstr_12A_12P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_12A_12P.df = as.data.frame(df_fig_res_pstr_12A_12P)
+write.table(df_fig_res_pstr_12A_12P.df, file = "/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_12A_12P.tsv")
+
+
+fig_res_pstr_12A_12P = df_fig_res_pstr_12A_12P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT12P`, fill = `lfc_diel_timeT12P`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT12P` - `se_diel_timeT12P`, ymax = `lfc_diel_timeT12P` + `se_diel_timeT12P`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T12A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_12A_12P
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_12A_12P.pdf", width = 13, height = 20)
+fig_res_pstr_12A_12P
+dev.off()
+
+```
+
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_6A_6P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T6A' |
+                                             diel_pstr@sam_data$diel_time=='T6P')
+
+ancom_pstr_6A_6P = ancombc2(data = pstr_6A_6P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_6A_6P = ancom_pstr_6A_6P$res
+res_prim_pstr_6A_6P
+df_res_pstr_6A_6P = res_prim_pstr_6A_6P %>% dplyr::filter(diff_diel_timeT6P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_6A_6P = df_res_pstr_6A_6P %>% 
+    arrange(desc(`lfc_diel_timeT6P`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6P`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_6A_6P$taxon = factor(df_fig_res_pstr_6A_6P$taxon, levels = df_fig_res_pstr_6A_6P$taxon)
+df_fig_res_pstr_6A_6P$direct = factor(df_fig_res_pstr_6A_6P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_6A_6P.df = as.data.frame(df_fig_res_pstr_6A_6P)
+write.table(df_fig_res_pstr_6A_6P.df, file = "/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_6A_6P.tsv")
+
+
+fig_res_pstr_6A_6P = df_fig_res_pstr_6A_6P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6P`, fill = `lfc_diel_timeT6P`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6P` - `se_diel_timeT6P`, ymax = `lfc_diel_timeT6P` + `se_diel_timeT6P`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T6P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_6A_6P
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/ancom/ancom_pstr_6A_6P.pdf", width = 13, height = 20)
+fig_res_pstr_6A_6P
+dev.off()
+
+```
+
+##################################################################################
+##################################################################################
+###                          Heatmaps w/ AMPVIS2                               ###
+##################################################################################
+##################################################################################
+
+##################################################################################
+###                                    PSTR                                    ###
+##################################################################################
+
+#PSTR (Samples through time, D1-D2-D3) **USED**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr<- ampvis2::amp_load(diel_pstr)
+
+
+
+av2_pstr<- amp_heatmap(ampvis2_pstr, 
+                       order_x_by = dielpstrdayorder, 
+                       group_by = "sample_name", 
+                       #facet_by = "diel_time",
+                       tax_add = c("Class","Family","Genus"), 
+                       tax_aggregate = "OTU", 
+                       plot_values = FALSE,
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_pstr
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/heatmaps/pstr_hm_samplebytimepoint_clean.pdf", width = 14, height = 6)
+av2_pstr
+dev.off()
+```
+
+#PSTR (Samples through time, D1-D2-D3) **PLAS ONLY** **USED**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr_plas<- amp_load(diel_pstr_plas)
+
+av2_pstr_plas<- amp_heatmap(ampvis2_pstr_plas, 
+                       order_x_by = dielpstrdayorder, 
+                       group_by = "sample_name", 
+                       #facet_by = "diel_time",
+                       tax_add = c("Class","Family","Genus"), 
+                       tax_aggregate = "OTU", 
+                       plot_values = FALSE,
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_pstr_plas
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/heatmaps/pstr_plas_hm_samplebytimepoint_clean.pdf", width = 14, height = 6)
+av2_pstr_plas
+dev.off()
+```
+
+
+##################################################################################
+##################################################################################
+###                               Core Microbiome                              ###
+##################################################################################
+##################################################################################
+
+##################################################################################
+###                       Shared Core w/ Venn Example                          ###
+##################################################################################
+#From Shetty and Lahti et al. https:/microbiome.github.io/tutorials/core_venn.html
+
+```{r}
+#install.packages("eulerr") # If not installed
+library(eulerr)
+library(microbiome)
+devtools::install_github('microsud/microbiomeutilities')
+library(microbiomeutilities)
+```
+
+#We will aim to identify shared core taxa between nationalities.
+```{r}
+# simple way to count number of samples in each group
+table(meta(diel_pstr)$diel_time, useNA = "always")
+```
+
+# convert to relative abundances
+```{r}
+diel_pstr.rel <- microbiome::transform(diel_pstr, "compositional")
+```
+
+#Make a list from variable
+```{r}
+time_points <- unique(as.character(meta(diel_pstr.rel)$diel_time))
+print(time_points)
+```
+
+#Write a for loop to go through each of the time points one by one and combine identified core taxa into a list.
+```{r}
+list_core <- c() # an empty object to store information
+
+for (n in time_points){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    
+    diel_pstr.sub <- subset_samples(diel_pstr.rel, time_points == n) # Choose sample from DiseaseState by n
+    
+    diel_pstr_core_m <- core_members(diel_pstr.sub, # ps.sub is phyloseq selected with only samples from g 
+                           detection = 0.001, # 0.001 relative abundance 0.1% rel abund
+                           prevalence = 0.75) #in at least 75% of samples
+    print(paste0("No. of core taxa in ", n, " : ", length(diel_pstr_core_m))) # print core taxa identified in each DiseaseState.
+    list_core[[n]] <- diel_pstr_core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+```
+
+```{r}
+print(list_core)
+```
+
+
+```{r}
+# Specify colors and plot venn
+# supplying colors in the order they appear in list_core
+mycols <- c(T12A="mediumpurple", T6A="#d6e2e9", T12P="#fcf5c7", T6P="lightgoldenrod") 
+plot(venn(list_core),
+     fills = mycols)
+```
+
+#Here, we see that the ids are only names without taxonomic information. This is because the rownames of otu_table and tax_table are usually IDs or sequences.
+#The format_to_besthit() function in microbiomeutilites can be useful which add best taxonomic information that is available as demonstrated below.
+```{r}
+print(list_core)
+
+# use the pseq.rel object created at the begening of this tutorial. 
+taxa_names(diel_pstr.rel)[1:5]
+```
+
+#DOES NOT WORK BECAUSE 16s!!
+```{r}
+# format names
+diel_pstr.rel.f <- format_to_besthit(diel_pstr.rel)
+# check names
+taxa_names(diel_pstr.rel.f)[1:5]
+
+```
+
+
+##################################################################################
+###                               Core Venn Diagram                            ###
+##################################################################################
+
+
+```{r}
+#install.packages("ggvenn")
+library(ggvenn)
+
+#diel_pstr_core_otu <- diel_pstr_core_members@otu_table %>% group_by(diel_pstr_core_members@sam_data$diel_time) %>% as.data.frame()
+
+listcore <- list_core
+listcore <- listcore[c("T12A","T6A", "T12P","T6P")]
+
+venn_diel_pstr <- ggvenn(listcore,
+                         columns = NULL,
+                         show_elements = FALSE,
+                         show_percentage = FALSE,
+                         digits = 1,
+                         fill_color = c("midnightblue","slategray","gold", "orange"),
+                         fill_alpha = 0.5,
+                         stroke_color = "black",
+                         stroke_alpha = 1,
+                         stroke_size = 1,
+                         stroke_linetype = "solid",
+                         set_name_color = "black",
+                         set_name_size = 6,
+                         text_color = "black",
+                         text_size = 4,
+                         label_sep = ",",
+                         count_column = NULL,
+                         show_outside = c("auto"),
+                         auto_scale = FALSE
+                          )
+              
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/coreupset/pstr_venn_core75_lefttoright.pdf", width = 9, height = 7)
+venn_diel_pstr
+dev.off()
+```
+
+#produce unqiue values to excel
+```{r}
+library(dplyr)
+T12A_unique <- list_core$T12A
+T6A_unique <- list_core$T6A
+T12P_unique <- list_core$T12P
+T6P_unique <- list_core$T6P
+
+write.csv(T12A_unique, "/path/to/data/curacao/metabarcoding/data/16s_diel/16s_core_asvs_T12A.csv")
+write.csv(T6A_unique, "/path/to/data/curacao/metabarcoding/data/16s_diel/16s_core_asvs_T6A.csv")
+write.csv(T12P_unique, "/path/to/data/curacao/metabarcoding/data/16s_diel/16s_core_asvs_T12P.csv")
+write.csv(T6P_unique, "/path/to/data/curacao/metabarcoding/data/16s_diel/16s_core_asvs_T6P.csv")
+```
+
+
+
+##################################################################################
+###                               Core Upset Plot                              ###
+##################################################################################
+
+```{r}
+#install.packages("UpSetR")
+library(UpSetR)
+library(MicrobiotaProcess)
+
+#get data to observe upset - using whole data
+upsetda <- get_upset(diel_pstr, factorNames="diel_time")
+
+otuda <- t(diel_pstr@otu_table) %>% as.data.frame
+
+sampleda <- map["diel_time"]
+
+head(sampleda)
+
+upsetda2 <- get_upset(obj=otuda, sampleda=sampleda, 
+                     factorNames="diel_time")
+
+#Do Not Touch
+pstr_upsetr <- UpSetR::upset(upsetda, 
+                     sets=c("T6P","T12P","T6A","T12A"), 
+                     sets.bar.color = c("orange","gold","slategray","midnightblue"),
+                     order.by = "freq", 
+                     empty.intersections = "on", 
+                     keep.order = TRUE,
+                     mainbar.y.label = "ASV Intersection Size"
+                     )
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/coreupset/pstr_upset_dielpstr_freq.pdf", width = 9, height = 5)
+pstr_upsetr
+dev.off()
+
+
+#make upset from list of core members
+library(UpSetR)
+
+pstr_upsetr_core <- UpSetR::upset(fromList(listcore[c("T6P","T12P","T6A","T12A")]), 
+                     sets=c("T6P","T12P","T6A","T12A"), 
+                     sets.bar.color = c("orange","gold","slategray","midnightblue"),
+                     order.by = "freq", 
+                     empty.intersections = "on", 
+                     keep.order = TRUE,
+                     mainbar.y.label = "ASV Intersection Size"
+                     )
+
+pdf("/path/to/data/curacao/metabarcoding/analysis/16s_diel/coreupset/pstr_upset_dielpstr_core75_freq.pdf", width = 9, height = 5)
+pstr_upsetr_core
+dev.off()
+```
+#Note: There are limitations to the number of groups that can be plotted with the eulerr::venn(). Check eulerr documentation for more detailed information.
+
+##################################################################################
+##################################################################################
+###                                Co-Occurence                                ###
+##################################################################################
+##################################################################################
+
+#Need PS objects to combine for Networks
+```{r}
+write.csv(diel_pstr@otu_table, "/path/to/data/curacao/metabarcoding/data/16S_18S_Network/16s_otus.csv")
+write.csv(diel_pstr@tax_table, "/path/to/data/curacao/metabarcoding/data/16S_18S_Network/16s_tax.csv")
+
+```
+
+
+##################################################################################
+###                              Proks / Euks                                  ###
+##################################################################################
+
+##################################################################################
+###                                 Day/Night                                  ###
+##################################################################################
+
+#12AM-6AM **NIGHT**
+```{r fig.height=15,fig.width=15}
+
+library(microeco)
+meco_pstrnight <- phyloseq2meco(pstrnight)
+meco_pstrnight
+
+####################################### Fix Taxonomy Problems   ###########################################
+
+library(stringr)
+tax.clean <- meco_pstrnight$tax_table
+
+#write.csv(tax.clean, "~/Desktop/tax.clean.csv")
+
+tax.clean <- data.frame(row.names = row.names(meco_pstrnight$tax_table),
+Kingdom = str_replace(meco_pstrnight$tax_table[,1], "D_0__",""),
+Phylum = str_replace(meco_pstrnight$tax_table[,2], "D_1__",""),
+Class = str_replace(meco_pstrnight$tax_table[,3], "D_2__",""),
+Order = str_replace(meco_pstrnight$tax_table[,4], "D_3__",""),
+Family = str_replace(meco_pstrnight$tax_table[,5], "D_4__",""),
+Genus = str_replace(meco_pstrnight$tax_table[,6], "D_5__",""),
+Species = str_replace(meco_pstrnight$tax_table[,7], "D_6__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == "p__"){kingdom <- paste(tax.clean[i,1],"NA", sep = "")
+  tax.clean[i, 2] <- kingdom
+  tax.clean[i, 3] <- paste(kingdom,"_X", sep = "")
+  tax.clean[i, 4] <- paste(kingdom,"XX", sep = "")
+  tax.clean[i, 5] <- paste(kingdom,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(kingdom,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(kingdom,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == "c__"){phylum <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- phylum
+  tax.clean[i, 4] <- paste(phylum,"X", sep = "")
+  tax.clean[i, 5] <- paste(phylum,"XX", sep = "")
+  tax.clean[i, 6] <- paste(phylum,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(phylum,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == "o__"){class <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- class
+  tax.clean[i, 5] <- paste(class,"X", sep = "")
+  tax.clean[i, 6] <- paste(class,"XX", sep = "")
+  tax.clean[i, 7] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == "f__"){order <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- order
+  tax.clean[i, 6] <- paste(order,"X", sep = "")
+  tax.clean[i, 7] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == "g__"){family <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- family
+   tax.clean[i, 7] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == "s__"){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+
+meco_pstrnight$tax_table <- as.matrix(tax.clean)
+
+tnight <- trans_network$new(dataset = meco_pstrnight, cal_cor = "SparCC", taxa_level = "OTU", filter_thres = 0.0001, SparCC_simu_num = 100)
+tnight$cal_network(network_method="SpiecEasi")
+
+tnetwork <- tnight$cal_network
+
+#got to here and switched to proks/euks
+
+#t12a$save_network(filepath = "/path/to/data/curacao/metabarcoding/data/16S_18S_Network/t12a_network_genus.gexf")
+# Open in Gephi and save as gexf again, then continue below
+#gexft12a <- read.gexf("/path/to/data/curacao/metabarcoding/data/16S_18S_Network/t12a_network_genus.gexf")
+#igrapht12a <- gexf.to.igraph(gexft12a)
+
+#t12a$cal_network_attr()
+#t12a$cal_node_type()
+#t12a$plot_taxa_roles(use_type = 1)
+#t12a$cal_eigen()
+
+tnight$cal_sum_links(taxa_level = "Genus")
+
+gencolorder<-c("#DDCC77", 
+                        "mediumorchid", 
+                        "#DDCC77", 
+                        "navyblue", 
+                        "royalblue",
+                        "#661100",
+                        "#EF7C12", 
+                        "#DDCC77",
+                        "#C70E7B",
+                        "#D72000", 
+                        "#1BB6AF",
+                        "limegreen",
+                        "#9FBD25",
+                        "goldenrod2",
+                        "#D72000")
+
+p <- tnight$plot_sum_links(plot_pos = TRUE, plot_num = 15, color_values = gencolorder) 
+
+poption<-p$x$option
+chordmat<-p$x$matrix
+groupnames <- poption[["groupNames"]]
+list(groupnames)
+
+gencols<- c("g__Breviolum"="#DDCC77", "f__Symbiodiniaceae"="#DDCC77",
+            "g__Corallicolidae_COR1"="mediumorchid", "f__Corallicolidae"="mediumorchid",
+            "g__Durusdinium"="#DDCC77", "f__Symbiodiniaceae"="#DDCC77",
+            "g__Pseudomonas"="navyblue","f__Pseudomonadaceae"="navyblue",
+            "g__Endozoicomonas"="royalblue", "f__Endozoicomonadaceae"="royalblue",
+            "g__Stenotrophomonas" ="#661100", "f__Xanthomonadaceae"="#661100",
+            "g__Bacteroides"="#EF7C12", "f__Bacteroidaceae"="#EF7C12",
+            "g__Symbiodiniaceae_X"="#DDCC77", "f__Symbiodiniaceae_X"="#DDCC77",
+            "g__[Ruminococcus] torques group"="#C70E7B", "f__Lachnospiraceae"="#C70E7B"
+            "g__Faecalibacterium"="#D72000", "f__Ruminococcaceae"="#D72000",
+            "g__Methylobacterium-Methylorubrum"="#1BB6AF", "f__Beijerinckiaceae"="#1BB6AF",
+            "g__Ostreobium"="limegreen", "f__Ostreobiaceae"="limegreen",
+            "g__Staphylococcus"="#9FBD25", "f__Staphylococcaceae"="#9FBD25",
+            "g__Streptococcus"="goldenrod2", "f__Streptococcaceae"="goldenrod2",
+            "f__Ruminococcaceae_X"="#D72000", "f__Ruminococcaceae"="#D72000")
+            
+            
+pdf("/path/to/data/curacao/metabarcoding/analysis/diel/network analyses/pstrnight_holobiont_chord_genus.pdf", width = 15, height = 15)
+chordDiagram(chordmat, column.col = gencolorder, grid.col = gencolorder, transparency = 0.50, annotationTrack = "grid", 
+    preAllocateTracks = list(track.height = max(strwidth(unlist(dimnames(chordmat))))))
+# gotta customize those labels we removed above
+circos.track(track.index = 1, panel.fun = function(x, y) {
+    circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index, 
+        facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.5))
+}, bg.border = NA) 
+dev.off()
+
+```
+
+#Day
+```{r fig.height=15,fig.width=15}
+library(microeco)
+meco_pstrday <- phyloseq2meco(pstrday)
+meco_pstrday
+
+####################################### Fix Taxonomy Problems   ###########################################
+
+library(stringr)
+tax.clean <- meco_pstrday$tax_table
+
+#write.csv(tax.clean, "~/Desktop/tax.clean.csv")
+
+tax.clean <- data.frame(row.names = row.names(meco_pstrday$tax_table),
+Kingdom = str_replace(meco_pstrday$tax_table[,1], "D_0__",""),
+Phylum = str_replace(meco_pstrday$tax_table[,2], "D_1__",""),
+Class = str_replace(meco_pstrday$tax_table[,3], "D_2__",""),
+Order = str_replace(meco_pstrday$tax_table[,4], "D_3__",""),
+Family = str_replace(meco_pstrday$tax_table[,5], "D_4__",""),
+Genus = str_replace(meco_pstrday$tax_table[,6], "D_5__",""),
+Species = str_replace(meco_pstrday$tax_table[,7], "D_6__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == "p__"){kingdom <- paste(tax.clean[i,1],"NA", sep = "")
+  tax.clean[i, 2] <- kingdom
+  tax.clean[i, 3] <- paste(kingdom,"_X", sep = "")
+  tax.clean[i, 4] <- paste(kingdom,"XX", sep = "")
+  tax.clean[i, 5] <- paste(kingdom,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(kingdom,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(kingdom,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == "c__"){phylum <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- phylum
+  tax.clean[i, 4] <- paste(phylum,"X", sep = "")
+  tax.clean[i, 5] <- paste(phylum,"XX", sep = "")
+  tax.clean[i, 6] <- paste(phylum,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(phylum,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == "o__"){class <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- class
+  tax.clean[i, 5] <- paste(class,"X", sep = "")
+  tax.clean[i, 6] <- paste(class,"XX", sep = "")
+  tax.clean[i, 7] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == "f__"){order <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- order
+  tax.clean[i, 6] <- paste(order,"X", sep = "")
+  tax.clean[i, 7] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == "g__"){family <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- family
+   tax.clean[i, 7] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == "s__"){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+
+meco_pstrday$tax_table <- as.matrix(tax.clean)
+
+tday <- trans_network$new(dataset = meco_pstrday, cal_cor = "SparCC", taxa_level = "OTU", filter_thres = 0.0001, SparCC_simu_num = 100)
+tday$cal_network(network_method="SpiecEasi")
+
+tnetwork <- tday$cal_network
+
+#got to here and switched to proks/euks
+
+#t6a$save_network(filepath = "/path/to/data/curacao/metabarcoding/data/16S_18S_Network/t6a_network_genus.gexf")
+# Open in Gephi and save as gexf again, then continue below
+#gexft6a <- read.gexf("/path/to/data/curacao/metabarcoding/data/16S_18S_Network/t6a_network_genus.gexf")
+#igrapht6a <- gexf.to.igraph(gexft6a)
+
+#t6a$cal_network_attr()
+#t6a$cal_node_type()
+#t6a$plot_taxa_roles(use_type = 1)
+#t6a$cal_eigen()
+
+tday$cal_sum_links(taxa_level = "Genus")
+
+gencolorder<-c("#DDCC77", 
+                        "mediumorchid", 
+                        "#EF7C12",
+                        "#DDCC77", 
+                        "royalblue",
+                        "navyblue", 
+                        "#661100",
+                        "#D72000", 
+                        "#DDCC77",
+                        "#C70E7B",
+                        "#C70E7B",
+                        "mediumturquoise",
+                        "royalblue4",
+                        "seagreen",
+                        "navyblue"
+                        )
+
+p <- tday$plot_sum_links(plot_pos = TRUE, plot_num = 15, color_values = gencolorder) 
+
+poption<-p$x$option
+chordmat<-p$x$matrix
+groupnames <- poption[["groupNames"]]
+list(groupnames)
+
+gencols<- c("g__Breviolum"="#DDCC77", "f__Symbiodiniaceae"="#DDCC77",
+            "g__Corallicolidae_COR1"="mediumorchid", "f__Corallicolidae"="mediumorchid",
+            "g__Bacteroides"="#EF7C12", "f__Bacteroidaceae"="#EF7C12",
+            "g__Durusdinium"="#DDCC77", "f__Symbiodiniaceae"="#DDCC77",
+            "g__Endozoicomonas"="royalblue", "f__Endozoicomonadaceae"="royalblue",
+            "g__Pseudomonas"="navyblue","f__Pseudomonadaceae"="navyblue",
+            "g__Stenotrophomonas" ="#661100", "f__Xanthomonadaceae"="#661100",
+            "g__Faecalibacterium"="#D72000", "f__Ruminococcaceae"="#D72000",
+            "g__Symbiodiniaceae_X"="#DDCC77", "f__Symbiodiniaceae"="#DDCC77",
+            "g__[Ruminococcus] torques group"="#C70E7B", "f__Lachnospiraceae"="#C70E7B",
+            "g__Blautia"="#C70E7B", "f__Lachnospiraceae"="#C70E7B"
+            "g__Defluviicoccus"= "mediumturquoise", "f__Defluviicoccaceae"="mediumturquoise",
+            "g__Hahella"="royalblue4", "f__Hahellaceae"="royalblue4",
+            "g__Parabacteroides"="seagreen", "f__Tannerellaceae"="seagreen",
+            "g__Pseudomonadales_XX"="navyblue","f__Pseudomonadaceae"="navyblue")
+            
+  
+            
+pdf("/path/to/data/curacao/metabarcoding/analysis/diel/network analyses/pstrday_holobiont_chord_genus.pdf", width = 15, height = 15)
+chordDiagram(chordmat, column.col = gencolorder, grid.col = gencolorder, transparency = 0.50, annotationTrack = "grid", 
+    preAllocateTracks = list(track.height = max(strwidth(unlist(dimnames(chordmat))))))
+# gotta customize those labels we removed above
+circos.track(track.index = 1, panel.fun = function(x, y) {
+    circos.text(CELL_META$xcenter, CELL_META$ylim[1], CELL_META$sector.index, 
+        facing = "clockwise", niceFacing = TRUE, adj = c(0, 0.5))
+}, bg.border = NA) 
+dev.off()
+
+```
+
+##################################################################################
+##################################################################################
+##                     Chloroplast Exploration                                  ##
+##################################################################################
+##################################################################################
+
+```{r}
+colnames(ps_chloro@tax_table) <- c("Domain",	"Supergroup",	"Division",	"Subdivision",	"Class",	"Order",	"Family",	"Genus",	"Species")
+
+ps_chloro_diel <- subset_samples(ps_chloro, ps_chloro@sam_data$project=='Diel')
+ps_chloro_diel <- subset_samples(ps_chloro_diel, ps_chloro_diel@sam_data$host!='Water')
+
+
+bub_chloro_diel <- merge_samples(ps_chloro_diel, ps_chloro_diel@sam_data$diel_time) ##Variable
+type_taxa_chloro_diel <- bub_chloro_diel %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% 
+  arrange(Genus) 
+
+dat_chloro_diel <- data.table(type_taxa_chloro_diel)
+# convert Phylum to a character vector from a factor because R
+dat_chloro_diel$Genus <- as.character(dat_chloro_diel$Genus)
+# group dataframe by Phylum, calculate median rel. abundance
+dat_chloro_diel[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Phylum less than 2%
+dat_chloro_diel[(median <= 0.001), Genus := "Remainder"]
+
+bp_chloro_diel <- ggplot(dat_chloro_diel[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=plast_genus))) + 
+  geom_point(aes(size = Abundance, fill=Division), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Sample", y = "Plastid Diversity", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  scale_fill_manual(values = palette, guide = guide_legend(override.aes = list(size = 3, alpha = 1))) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bp_chloro_diel
+
+pdf("/path/to/data/curacao/analysis/bp_chloro_diel.pdf", width = 13, height = 12)
+bp_chloro_diel
+dev.off()
+
+
+#PSTR
+ps_chloro_diel_pstr <- subset_samples(ps_chloro_diel, ps_chloro_diel@sam_data$host=='Pseudodiploria strigosa')
+bub_chloro_diel_pstr <- merge_samples(ps_chloro_diel_pstr, ps_chloro_diel_pstr@sam_data$diel_time) ##Variable
+type_taxa_chloro_diel_pstr <- bub_chloro_diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% 
+  arrange(Genus) 
+
+dat_chloro_diel_pstr <- data.table(type_taxa_chloro_diel_pstr)
+# convert Phylum to a character vector from a factor because R
+dat_chloro_diel_pstr$Genus <- as.character(dat_chloro_diel_pstr$Genus)
+# group dataframe by Phylum, calculate median rel. abundance
+dat_chloro_diel_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Phylum less than 2%
+dat_chloro_diel_pstr[(median <= 0.001), Genus := "Remainder"]
+
+bp_chloro_diel_pstr <- ggplot(dat_chloro_diel_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=plast_genus))) + 
+  geom_point(aes(size = Abundance, fill=Division), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Sample", y = "Plastid Diversity", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  scale_fill_manual(values = palette, guide = guide_legend(override.aes = list(size = 3, alpha = 1))) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bp_chloro_diel_pstr
+
+pdf("/path/to/data/curacao/analysis/bp_chloro_diel_pstr.pdf", width = 13, height = 12)
+bp_chloro_diel_pstr
+dev.off()
+
+
+#Water
+ps_chloro_diel_water <- subset_samples(ps_chloro, ps_chloro@sam_data$project=='Diel')
+ps_chloro_diel_water <- subset_samples(ps_chloro_diel_water, ps_chloro_diel_water@sam_data$host=='Water')
+bub_chloro_diel_water <- merge_samples(ps_chloro_diel_water, ps_chloro_diel_water@sam_data$diel_time) ##Variable
+type_taxa_chloro_diel_water <- bub_chloro_diel_water %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% 
+  arrange(Genus) 
+
+dat_chloro_diel_water <- data.table(type_taxa_chloro_diel_water)
+# convert Phylum to a character vector from a factor because R
+dat_chloro_diel_water$Genus <- as.character(dat_chloro_diel_water$Genus)
+# group dataframe by Phylum, calculate median rel. abundance
+dat_chloro_diel_water[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Phylum less than 2%
+dat_chloro_diel_water[(median <= 0.001), Genus := "Remainder"]
+
+bp_chloro_diel_water <- ggplot(dat_chloro_diel_water[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=plast_genus))) +
+  geom_point(aes(size = Abundance, fill=Division), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Sample", y = "Plastid Diversity", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  scale_fill_manual(values = palette, guide = guide_legend(override.aes = list(size = 3, alpha = 1))) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bp_chloro_diel_water
+
+pdf("/path/to/data/curacao/analysis/bp_chloro_diel_water.pdf", width = 13, height = 12)
+bp_chloro_diel_water
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
