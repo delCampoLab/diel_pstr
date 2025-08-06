@@ -1,0 +1,3736 @@
+---
+title: "16s_curacao"
+author: "Brad Weiler"
+date: "2023-10-04"
+output: "/Volumes/projects/weiler/disease/scripts/Curacao_disease_16S.Rmd"
+---
+
+
+#Load in required programs for the pipeline 
+```{r, warning=FALSE}
+library("devtools"); packageVersion("devtools")
+library("phyloseq"); packageVersion("phyloseq")
+library("dada2"); packageVersion("dada2")
+library("Biostrings"); packageVersion("Biostrings")
+library("ggplot2"); packageVersion("ggplot2")
+library("ALDEx2");packageVersion("ALDEx2")
+library("vegan"); packageVersion("vegan")
+library("viridis"); packageVersion("viridis")
+library("tidyr"); packageVersion("tidyr")
+library("dplyr"); packageVersion("dplyr")
+library("scales"); packageVersion("scales")
+library("grid"); packageVersion("grid")
+library("reshape2"); packageVersion("reshape2")
+library("edgeR"); packageVersion("edgeR")
+library("plyr"); packageVersion("plyr")
+library("DESeq2"); packageVersion("DESeq2")
+library("gridExtra"); packageVersion("gridExtra")
+library("ampvis2"); packageVersion("ampvis2")
+library("phangorn"); packageVersion("phangorn")
+library("msa"); packageVersion("msa")
+library("ape"); packageVersion("ape")
+library("Rcpp"); packageVersion("Rcpp")
+library("DECIPHER"); packageVersion("DECIPHER")
+library("ggpubr"); packageVersion("ggpubr")
+library("knitr"); packageVersion("knitr")
+library("RColorBrewer"); packageVersion("RColorBrewer")
+library("microbiome"); packageVersion("microbiome")
+library("ggjoy"); packageVersion("ggjoy")
+library("ggstance"); packageVersion("ggstance")
+library("ggridges"); packageVersion("ggridges")
+library("ggtree"); packageVersion("ggtree")
+library("QsRutils"); packageVersion("QsRutils")
+library("phytools"); packageVersion("phytools")
+library("nlme"); packageVersion("nlme")
+library("tidyverse"); packageVersion("tidyverse")
+library("compositions"); packageVersion("compositions")
+library("ANCOMBC"); packageVersion("ANCOMBC")
+library("DT"); packageVersion("DT")
+library("tibble"); packageVersion("tibble")
+library("caret"); packageVersion("caret")
+library("htmlwidgets"); packageVersion("htmlwidgets")
+library("circlize"); packageVersion("circlize")
+library("webshot"); packageVersion("webshot")
+library("microeco"); packageVersion("microeco")
+library("file2meco"); packageVersion("file2meco")
+library("rgexf"); packageVersion("rgexf")
+library("igraph"); packageVersion("igraph")
+library("RColorBrewer")
+library("LaCroixColoR")
+library("decontam")
+library(ggplot2)
+library(phyloseq)
+library(shadowtext)
+library(ggtree)
+library(ggtreeExtra)
+library(treeio)
+library(tidytree)
+library(see)
+library(gghalves)
+library(limorhyde)
+#library(MicrobiotaProcess)
+library(curatedMetagenomicData)
+library("NetCoMi"); packageVersion("NetCoMi")
+#library(""); packageVersion("")
+```
+
+##################################################################################
+##                                Tree Building                                 ##
+##################################################################################
+
+#Subset the ASVs you want to build your tree with
+```{r}
+#Make a textfile containing all relevant ASvs in your subsetted phyloseq object from below
+write.csv(diel@tax_table, "/Volumes/projects/weiler/curacao/data/18s_diel/diel_taxtable.csv")
+```
+
+#Need to use AWK in terminal
+```{bash}
+#Using that text file we can use AWK to filter those ASVs from the actual fasta file
+awk '
+FNR==NR{
+  arr[$0]
+  next
+}
+/^>/{
+  found=""
+  match($0,/^>[^.]*/)
+  if(substr($0,RSTART+1,RLENGTH-1) in arr){
+    found=1
+  }
+}
+found
+' FilteredDielAsvs.txt ASVs.fa > FilteredDielAsvs.fa
+```
+
+#load in filtered ASVs fasta
+```{r}
+library(DECIPHER); packageVersion("DECIPHER")
+library(phangorn); packageVersion("phangorn")
+#load the data
+diel_seqs <- readDNAStringSet("/Volumes/projects/weiler/curacao/data/18s_diel/FilteredDielAsvs.fa")
+#align the seqs
+alignment <- AlignSeqs(DNAStringSet(diel_seqs), anchor=NA)
+#phangorn
+phang.align <- phyDat(as(alignment, "matrix"), type="DNA")
+dm <- dist.ml(phang.align)
+treeNJ <- NJ(dm)
+fit = pml(treeNJ, data=phang.align)
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE, rearrangement="stochastic", control=pml.control(trace = 0))
+tree <- fitGTR$tree
+write.tree(tree, file = "/Volumes/projects/weiler/curacao/data/18s_diel/diel_tree.nw", append = FALSE, digits = 10, tree.names = FALSE)
+```
+
+#RAXML
+```{r}
+raxmlHPC-PTHREADS-SSE3 -T 4 -m GTRCAT -p 31415 -x 20398 -d -f a -N 100 -n ML_Tree -s "~/analysis/ASVs_aligned.fa"
+```
+
+##################################################################################
+##                          Build Phyloseq/Filter                               ##
+##################################################################################
+#Build Phyloseq Object
+```{r}
+library(phyloseq); packageVersion("phyloseq")
+SV <- read.table("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/exported_files/18s_expfiles_diel/ASVs_counts.tsv", row.names = 1, check.names= FALSE, sep = "\t", header = TRUE)
+tax <-as.matrix(read.table("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/exported_files/18s_expfiles_diel/ASVs_taxonomy.tsv", row.names = 1, header = TRUE, sep = "\t", fill=TRUE))
+map <- read.delim("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/curacao_mapping.txt", sep ="\t", header = TRUE, row.names = 1)
+#library(read.table)
+#tree <- ape::read.tree(file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/trees/18s_diel_tree.nw")
+
+library(dplyr)
+map <- filter(map, project=='Diel') %>% .[,colSums(is.na(map))<nrow(map)]
+
+#Without a tree
+ps = phyloseq(otu_table(SV, taxa_are_rows=TRUE), 
+               sample_data(map), 
+               phyloseq::tax_table(tax))
+#With a tree
+#ps = phyloseq(otu_table(SV, taxa_are_rows=TRUE), 
+#               sample_data(map), 
+#               phyloseq::tax_table(tax), phy_tree(tree))
+
+#ps_diel <- subset_samples(ps, ps@sam_data$project=='Diel')
+```
+
+
+
+
+
+#Filter phyloseq object
+```{r}
+ps_diel_filtered <- subset_taxa(ps, (Domain!="Bacteria"| is.na(Domain)))
+ps_diel_filtered <- subset_taxa(ps_diel_filtered, (Subdivision!="Metazoa"| is.na(Subdivision)))
+
+f1<- filterfun_sample(topf(0.99))
+wh1 <- genefilter_sample(ps_diel_filtered, f1, A=2)
+ps_diel_filtered <- prune_taxa(wh1, ps_diel_filtered)
+
+ps_diel_filtered <- prune_samples(sample_sums(ps_diel_filtered)>=250, ps_diel_filtered)
+ps_diel_filtered
+
+```
+
+
+```{r}
+library(stringr)
+tax.clean <- ps_diel_filtered@tax_table
+
+tax.clean <- data.frame(row.names = row.names(ps_diel_filtered@tax_table),
+Domain = str_replace(ps_diel_filtered@tax_table[,1], "D_0__",""),
+Supergroup = str_replace(ps_diel_filtered@tax_table[,2], "D_1__",""),
+Division = str_replace(ps_diel_filtered@tax_table[,3], "D_2__",""),
+Subdivision = str_replace(ps_diel_filtered@tax_table[,4], "D_3__",""),
+Class = str_replace(ps_diel_filtered@tax_table[,5], "D_4__",""),
+Order = str_replace(ps_diel_filtered@tax_table[,6], "D_5__",""),
+Family = str_replace(ps_diel_filtered@tax_table[,7], "D_6__",""),
+Genus = str_replace(ps_diel_filtered@tax_table[,8], "D_7__",""),
+Species = str_replace(ps_diel_filtered@tax_table[,9], "D_8__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:9){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == ""){domain <- paste(tax.clean[i,1],"_X", sep = "")
+  tax.clean[i, 2] <- domain
+  tax.clean[i, 3] <- paste(domain,"X", sep = "")
+  tax.clean[i, 4] <- paste(domain,"XX", sep = "")
+  tax.clean[i, 5] <- paste(domain,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(domain,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(domain,"XXXXX", sep = "")
+  tax.clean[i, 8] <- paste(domain,"XXXXXX", sep = "")
+  tax.clean[i, 9] <- paste(domain,"XXXXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == ""){supergroup <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- supergroup
+  tax.clean[i, 4] <- paste(supergroup,"X", sep = "")
+  tax.clean[i, 5] <- paste(supergroup,"XX", sep = "")
+  tax.clean[i, 6] <- paste(supergroup,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(supergroup,"XXXX.", sep = "")
+  tax.clean[i, 8] <- paste(supergroup,"XXXXX", sep = "")
+  tax.clean[i, 9] <- paste(supergroup,"XXXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == ""){division <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- division
+  tax.clean[i, 5] <- paste(division,"X", sep = "")
+  tax.clean[i, 6] <- paste(division,"XX", sep = "")
+  tax.clean[i, 7] <- paste(division,"XXX", sep = "")
+  tax.clean[i, 8] <- paste(division,"XXXX", sep = "")
+  tax.clean[i, 9] <- paste(division,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == ""){subdivision <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- subdivision
+  tax.clean[i, 6] <- paste(subdivision,"X", sep = "")
+  tax.clean[i, 7] <- paste(subdivision,"XX", sep = "")
+  tax.clean[i, 8] <- paste(subdivision,"XXX", sep = "")
+  tax.clean[i, 9] <- paste(subdivision,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == ""){class <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- class
+  tax.clean[i, 7] <- paste(class,"X", sep = "")
+  tax.clean[i, 8] <- paste(class,"XX", sep = "")
+  tax.clean[i, 9] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == ""){order <- paste(tax.clean[i,6], "_X", sep = "")
+  tax.clean[i, 7] <- order
+  tax.clean[i, 8] <- paste(order,"X", sep = "")
+  tax.clean[i, 9] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,8] == ""){family <- paste(tax.clean[i,7], "_X", sep = "")
+  tax.clean[i, 8] <- family
+  tax.clean[i, 9] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,9] == ""){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+
+
+tax_table(ps_diel_filtered) <- as.matrix(tax.clean)
+```
+
+
+
+
+#Control Exploration
+```{r}
+ps_control<-subset_samples(ps, ps@sam_data$Sample_or_Control == "Control Sample")
+
+
+bub_control <- merge_samples(ps_control, ps_control@sam_data$library_name) ##Variable
+type_taxa_control <- bub_control %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% 
+  arrange(Genus) 
+
+dat_control <- data.table(type_taxa_control)
+# convert Phylum to a character vector from a factor because R
+dat_control$Genus <- as.character(dat_control$Genus)
+# group dataframe by Phylum, calculate median rel. abundance
+dat_control[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Phylum less than 2%
+dat_control[(median <= 0.001), Genus := "Remainder"]
+
+bp_control <- ggplot(dat_control[Abundance > 0], aes(x = Sample, y = Genus)) + 
+  geom_point(aes(size = Abundance, fill=Phylum), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Sample", y = "Bacterial Genus", size = "Relative Abundance %", fill="Phylum") + theme_bw() +  
+  scale_fill_manual(values = palette, guide = guide_legend(override.aes = list(size = 3, alpha = 1))) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bp_control
+
+pdf("/Volumes/projects/weiler/curacao/analysis/bp_control.pdf", width = 13, height = 12)
+bp_control
+dev.off()
+
+write.table(type_taxa_control, file = "/Volumes/projects/weiler/curacao/data/type_taxa_control.tsv")
+
+
+
+
+
+bub_control_sd <- ps_control %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, VAR1)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bub_control_sd <- merge_samples(ps_control, "VAR1") 
+type_taxa1 <- bub1 %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa1 <- type_taxa1 %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat1 <- data.table(type_taxa1)
+
+dat1$SD <- sd1$sd
+# convert Phylum to a character vector from a factor because R
+dat1$TaxRANK <- as.character(dat1$TaxRANK)
+# group dataframe by Phylum, calculate median rel. abundance
+dat1[, median := median(Abundance, na.rm = FALSE), 
+    by = "TaxRANK"]
+# Change name to remainder of Phylum less than 2%
+dat1[(median <= 0.01), TaxRANK := "Below Threshold"]
+dat1[(TaxRANK == "Below Threshold"), TaxRANK_Higher := "Other"]
+
+my_title1 <- expression(paste("Microbial Orders within ", italic("P. clavata")))
+
+Fig1A <- ggplot(dat1[Abundance > 0], aes(x = factor(Sample, levels=ordered), y = factor(Order, levels=bac_orders))) + geom_point(aes(size = Abundance, fill=TaxRANK_Higher, color=TaxRANK_Higher), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Var1", y = "Prokaryotic TaxRANK", size = "Relative Abundance %", fill="Prokaryotic TaxRANK_Higher") + theme_bw() +  
+  scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=my_title1, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Phylum, color=TaxRANK_Higher), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = TaxRANK_Higher, color=TaxRANK_Higher), alpha = 1, shape=21) + guides(color = FALSE, fill = guide_legend(override.aes = list(size = 3)))
+Fig1A
+```
+
+
+
+#Decontamination of samples *Custom Workflow*
+```{r}
+library("decontam")
+sample_data(ps_filtered)$is.neg <- ps_filtered@sam_data[["Sample_or_Control"]] == "Control Sample"
+contamdf.prev <- isContaminant(ps_filtered, method="prevalence", neg="is.neg")
+table(contamdf.prev$contaminant)
+head(which(contamdf.prev$contaminant))
+
+write.csv(contamdf.prev, "/Volumes/projects/weiler/curacao/data/contaminant_asvs.csv")
+
+#contamdf.prev05 <- isContaminant(ps_filtered, method="prevalence", neg="is.neg", threshold=0.5)
+#table(contamdf.prev05$contaminant)
+
+# Make phyloseq object of presence-absence in negative controls and true samples
+ps.pa <- transform_sample_counts(ps_filtered, function(abund) 1*(abund>0))
+ps.pa.neg <- prune_samples(sample_data(ps.pa)$Sample_or_Control == "Control Sample", ps.pa)
+ps.pa.pos <- prune_samples(sample_data(ps.pa)$Sample_or_Control == "True Sample", ps.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa <- data.frame(pa.pos=taxa_sums(ps.pa.pos), pa.neg=taxa_sums(ps.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+ggplot(data=df.pa, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+
+#identifying the bad ASVs to be removed
+badTaxa <- c("ASV_4", "ASV_5", "ASV_6", "ASV_7", "ASV_10", "ASV_14", "ASV_15", "ASV_16", "ASV_17", "ASV_23", "ASV_28", "ASV_29", "ASV_33", "ASV_42", "ASV_46", "ASV_60", "ASV_63", "ASV_84", "ASV_130", "ASV_141", "ASV_144", "ASV_148", "ASV_149", "ASV_150", "ASV_177", "ASV_188", "ASV_191", "ASV_262", "ASV_292", "ASV_301", "ASV_312", "ASV_370", "ASV_387", "ASV_438", "ASV_713", "ASV_760", "ASV_807", "ASV_926", "ASV_998", "ASV_1010", "ASV_1227", "ASV_1357", "ASV_1462", "ASV_1508", "ASV_1510", "ASV_1644", "ASV_1699", "ASV_1789", "ASV_1972", "ASV_1973", "ASV_1998", "ASV_2124", "ASV_2163", "ASV_2169", "ASV_2188", "ASV_2252", "ASV_2373", "ASV_2413", "ASV_2414", "ASV_2493", "ASV_2510", "ASV_2571", "ASV_2576", "ASV_2608", "ASV_2630", "ASV_2664", "ASV_2710", "ASV_2999", "ASV_3029", "ASV_3197", "ASV_3218", "ASV_3413", "ASV_3440", "ASV_3627", "ASV_3634", "ASV_3797", "ASV_3913", "ASV_3943", "ASV_3992", "ASV_4005", "ASV_4015", "ASV_4018", "ASV_4022", "ASV_4029", "ASV_4077", "ASV_4640", "ASV_4780", "ASV_4844", "ASV_4879", "ASV_4997", "ASV_5023", "ASV_5066", "ASV_5086", "ASV_5162", "ASV_5418", "ASV_5467", "ASV_5643", "ASV_5824", "ASV_5957", "ASV_6087", "ASV_6139", "ASV_6168", "ASV_6244", "ASV_6329", "ASV_6503", "ASV_6549", "ASV_6557", "ASV_6689", "ASV_6698", "ASV_6758", "ASV_6812", "ASV_6920", "ASV_7056", "ASV_7336", "ASV_7473", "ASV_7516", "ASV_7607", "ASV_7791", "ASV_7880", "ASV_7898", "ASV_7904", "ASV_7957", "ASV_7984", "ASV_8512", "ASV_8664", "ASV_8803", "ASV_9363", "ASV_9672", "ASV_10502", "ASV_10840", "ASV_11255", "ASV_11504", "ASV_12041", "ASV_13006", "ASV_13829", "ASV_13924", "ASV_13926", "ASV_15490", "ASV_15974", "ASV_18043", "ASV_18910", "ASV_19156", "ASV_20530")
+
+#getting the taxa names from the phyloseq
+allTaxa <- taxa_names(ps_filtered)
+allTaxa_chloro <- taxa_names(ps_chloro)
+allTaxa_mito <- taxa_names(ps_mito)
+
+#removing the good taxa from the taxa names
+allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+allTaxa_chloro <- allTaxa_chloro[!(allTaxa_chloro %in% badTaxa)]
+allTaxa_mito <- allTaxa_mito[!(allTaxa_mito %in% badTaxa)]
+# new phyloseq object with excluded ASVs
+ps_filtered <- prune_taxa(allTaxa, ps_filtered)
+ps_chloro <- prune_taxa(allTaxa_chloro, ps_chloro)
+ps_mito <- prune_taxa(allTaxa_mito, ps_mito)
+
+# add in new phyloseq object is renamed and not rewritten
+ps_filtered
+
+ps_filtered <- subset_samples(ps_filtered, ps_filtered@sam_data$Sample_or_Control=="True Sample")
+
+#filtered ASV taxonomy tables
+write.table(ps_filtered@tax_table, file = "/Volumes/projects/weiler/curacao/data/ps_filtered_taxtable.tsv")
+write.table(ps_mito@tax_table, file = "/Volumes/projects/weiler/curacao/data/ps_mito_taxtable.tsv")
+write.table(ps_chloro@tax_table, file = "/Volumes/projects/weiler/curacao/data/ps_chloro_taxtable.tsv")
+```
+
+#Using script to pull ASVs from a fasta file based on a text file
+```{bash}
+awk '
+FNR==NR{
+  arr[$0]
+  next
+}
+/^>/{
+  found=""
+  match($0,/^>[^.]*/)
+  if(substr($0,RSTART+1,RLENGTH-1) in arr){
+    found=1
+  }
+}
+found
+' FilteredChloroAsvs.txt ASVs.fa > FilteredChloroAsvs.fa
+
+
+awk '
+FNR==NR{
+  arr[$0]
+  next
+}
+/^>/{
+  found=""
+  match($0,/^>[^.]*/)
+  if(substr($0,RSTART+1,RLENGTH-1) in arr){
+    found=1
+  }
+}
+found
+' FilteredMitosAsvs.txt ASVs.fa > FilteredMitosAsvs.fa
+
+```
+
+#Assigning taxonomy to subsetted fasta files
+```{r}
+seqtabchloro<- read_file("/Volumes/projects/weiler/curacao/data/FilteredMitosAsvs.fa")
+
+ref_fasta <- "/Volumes/projects/weiler/curacao/data/pr2_version_5.0.0_SSU_dada2.fasta.gz"
+taxa <- assignTaxonomy(seqtabchloro, refFasta=ref_fasta, multithread=2, taxLevels = c("Kingdom","Supergroup","Division","Class","Order","Family","Genus","Species"))
+colnames(taxa) <- c("Kingdom", "Supergroup","Division", "Class", "Order", "Family", "Genus", "Species")
+
+#make blast database
+makeblastdb -in /Volumes/projects/weiler/curacao/data/pr2_version_5.0.0_SSU_dada2.fasta -dbtype nucl -out pr2
+
+pr2 <- "/Volumes/projects/weiler/curacao/data/pr2_version_5.0.0_SSU_dada2.fasta.gz"
+blastn -task megablast -num_threads 4 -outfmt "6 qseqid qlen length bitscore qcovs evalue pident sseqid" -db /Volumes/projects/weiler/curacao/data/pr2_version_5.0.0_SSU_dada2.fasta.gz -max_target_seqs 1 -query FilteredMitosAsvs.fa -out ASVs_chloro.out
+
+#BLAST NAs Present
+blastn -task megablast -num_threads 4 -outfmt "6 qseqid qlen length bitscore qcovs evalue pident sseqid" -db pr2 -max_target_seqs 1 -query ASVs_NAs.fasta -out ASVs_NAs.out
+```
+
+
+#Subset phyloseq objects **Ensure that no control samples are included in dataset**
+```{r}
+#Sorting out character/factor data type
+#ps_filtered@sam_data$project <- as.factor(ps_filtered@sam_data$project)
+#ps_filtered@sam_data$host <- as.factor(ps_filtered@sam_data$host)
+
+#DIEL
+#ps_diel <- <- subset_samples(ps_filtered, ps_filtered@sam_data$project=='Diel' |
+#                                          ps_filtered@sam_data$project=='Diel' &
+#                                          ps_filtered@sam_data$host=='Water' )
+
+
+
+#SYMBIONT REMOVAL
+#disease <- subset_taxa(disease, (Genus!="Breviolum"| is.na(Genus)))
+diel <- subset_taxa(ps_diel_filtered, (Order!="Suessiales"| is.na(Order)))
+dielsymb <- subset_taxa(ps_diel_filtered, (Order=="Suessiales"))
+
+diel
+dielsymb
+
+
+
+diel_pstrw <- subset_samples(diel, diel@sam_data$host=='Pseudodiploria strigosa' |
+                                      diel@sam_data$host=='Water')
+dielsymb_pstrw <- subset_samples(dielsymb, diel@sam_data$host=='Pseudodiploria strigosa' |
+                                      diel@sam_data$host=='Water')
+
+#diel_oannw <- subset_samples(diel, diel@sam_data$host=='Orbicella annularis' |
+#                                      diel@sam_data$host=='Water')
+#diel_dlabw <- subset_samples(diel, diel@sam_data$host=='Diploria labyrinthiformis' |
+#                                      diel@sam_data$host=='Water')
+
+diel_pstr <- subset_samples(diel, diel@sam_data$host=='Pseudodiploria strigosa')
+diel_pstr_all <- subset_samples(ps_diel_filtered, diel@sam_data$host=='Pseudodiploria strigosa')
+dielsymb_pstr <- subset_samples(dielsymb, diel@sam_data$host=='Pseudodiploria strigosa')
+
+#diel_oann <- subset_samples(diel, diel@sam_data$host=='Orbicella annularis')
+#diel_dlab <- subset_samples(diel, diel@sam_data$host=='Diploria labyrinthiformis')
+#diel_water <- subset_samples(diel, diel@sam_data$host=='Water')
+
+
+
+
+
+
+
+##################################################################################
+##################################################################################
+###                                  Ordering                                  ###
+##################################################################################
+##################################################################################
+library(dplyr)
+#Bacterial Taxonomy
+bact_class <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/bact_class.txt",header=F)
+bactclass <- bact_class %>% pull(V1)
+bact_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/bact_order.txt",header=F)
+bactorder <- bact_order %>% pull(V1)
+bact_family <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/bact_family.txt",header=F)
+bactfamily <- bact_family %>% pull(V1)
+bact_genus <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/bact_genus.txt",header=F)
+bactgenus <- bact_genus %>% pull(V1)
+
+#Eukaryotic Taxonomy
+euk_supergroup <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_supergroup.txt",header=F)
+euksupergroup <- euk_supergroup %>% pull(V1)
+euk_division <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_division.txt",header=F)
+eukdivision <- euk_division %>% pull(V1)
+euk_subdivision <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_subdivision.txt",header=F)
+euksubdivision <- euk_subdivision %>% pull(V1)
+euk_class <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_class.txt",header=F)
+eukclass <- euk_class %>% pull(V1)
+euk_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_order.txt",header=F)
+eukorder <- euk_order %>% pull(V1)
+euk_family <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_family.txt",header=F)
+eukfamily <- euk_family %>% pull(V1)
+euk_genus <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_genus.txt",header=F)
+eukgenus <- euk_genus %>% pull(V1)
+euk_species <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/euk_species.txt",header=F)
+eukspecies <- euk_species %>% pull(V1)
+
+
+#Plastid Taxonomy
+plast_species <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/plast_species.txt",header=F)
+plast_species <- plast_species %>% pull(V1)
+plast_genus <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/plast_genus.txt",header=F)
+plast_genus <- plast_genus %>% pull(V1)
+plast_family <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/plast_family.txt",header=F)
+plast_family <- plast_family %>% pull(V1)
+plast_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/plast_order.txt",header=F)
+plast_order <- plast_order %>% pull(V1)
+plast_class <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/plast_class.txt",header=F)
+plast_class <- plast_class %>% pull(V1)
+plast_subdivision <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/plast_subdivision.txt",header=F)
+plast_subdivision <- plast_subdivision %>% pull(V1)
+
+#By Structure
+time_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/time_order.txt",header=F)
+timeorder <- time_order %>% pull(V1)
+daytime_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/daytime_order.txt",header=F)
+daytimeorder <- daytime_order %>% pull(V1)
+diel_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/diel_order.txt",header=F)
+dielorder <- diel_order %>% pull(V1)
+dielpstr_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/dielpstr_order.txt",header=F)
+dielpstrorder <- dielpstr_order %>% pull(V1)
+#dieloann_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/dieloann_order.txt",header=F)
+#dieloannorder <- dieloann_order %>% pull(V1)
+#dieldlab_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/dieldlab_order.txt",header=F)
+#dieldlaborder <- dieldlab_order %>% pull(V1)
+dielpstr_day_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/dielpstr_day_order.txt",header=F)
+dielpstrdayorder <- dielpstr_day_order %>% pull(V1)
+#dieloann_day_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/dieloann_day_order.txt",header=F)
+#dieloanndayorder <- dieloann_day_order %>% pull(V1)
+#dieldlab_day_order <- read.csv("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/ordering/dieldlab_day_order.txt",header=F)
+#dieldlabdayorder <- dieldlab_day_order %>% pull(V1)
+```
+
+
+
+#SUBSET PHYLOSEQ FOR SUBPHYLO OTU EXPLORATION
+```{r}
+
+#OTU Tables extraction
+OTU = as(otu_table(ps_diel), "matrix") 
+#OTU = t(OTU)
+OTU = as.data.frame(OTU)
+write.table(OTU, file = "/Volumes/projects/weiler/curacao/data/18s_diel/diel_otutable.tsv")
+#TAX Table extraction
+TAX = as(phyloseq::tax_table(ps_diel), "matrix")
+TAX = as.data.frame(TAX)
+write.table(TAX, file = "/Volumes/projects/weiler/curacao/data/18s_diel/diel_taxtable.tsv")
+#OTU Table w/ Tax Assignment extraction
+OTU <- tibble::rownames_to_column(OTU, "ASV")
+TAX <- tibble::rownames_to_column(TAX, "ASV")
+OTUTAX<- merge(OTU, TAX, by= "ASV")
+write.table(OTUTAX, file = "/Volumes/projects/weiler/curacao/data/18s_diel/diel_otutaxtable.tsv")
+
+
+
+#PSTR
+#OTU Tables extraction
+OTU = as(otu_table(diel_pstr), "matrix") 
+OTU = t(OTU)
+OTU = as.data.frame(OTU)
+write.table(OTU, file = "/Volumes/projects/weiler/curacao/data/18s_diel/pstr/diel_pstr_otutable.tsv")
+#TAX Table extraction
+TAX = as(tax_table(diel_pstr), "matrix")
+TAX = as.data.frame(TAX)
+write.table(TAX, file = "/Volumes/projects/weiler/curacao/data/18s_diel/pstr/diel_pstr_taxtable.tsv")
+#OTU Table w/ Tax Assignment extraction
+OTU <- tibble::rownames_to_column(OTU, "ASV")
+TAX <- tibble::rownames_to_column(TAX, "ASV")
+OTUTAX<- merge(OTU, TAX, by= "ASV")
+write.table(OTUTAX, file = "/Volumes/projects/weiler/curacao/data/18s_diel/pstr/diel_pstr_otutaxtable.tsv")
+#write.table(OTUTAX, file = "~/Desktop/diel_pstr_otutaxtable.tsv")
+
+
+
+
+```
+
+##################################################################################
+##                            Colour Palettes                                   ##
+##################################################################################
+
+# Colour Palettes
+```{r}
+library(randomcoloR)
+n <- 64
+palette <- distinctColorPalette(n)
+c28 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", "gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown", "firebrick3", "darkslategray", "gray0"
+)
+
+
+day_palette <- c("midnightblue", "gold")
+diel_palette <- c("midnightblue", "slategray", "gold", "orange")
+diel_palette_ordered <- c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange")
+
+safe_colorblind_palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
+                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+                             
+
+palette <- c("honeydew", "honeydew1", "honeydew2", "honeydew3", "honeydew4", "hotpink", "hotpink1", "hotpink2", "hotpink3", "hotpink4", "indianred", "indianred1", "indianred2", "indianred3", "indianred4", "ivory", "ivory1", "ivory2", "ivory3", "ivory4", "khaki", "khaki1", "khaki2", "khaki3", "khaki4", "lavender", "lavenderblush", "lavenderblush1", "lavenderblush2", "lavenderblush3", "lavenderblush4", "lawngreen", "lemonchiffon", "lemonchiffon1", "lemonchiffon2", "lemonchiffon3", "lemonchiffon4", "lightblue", "lightblue1", "lightblue2", "lightblue3", "lightblue4", "lightcoral", "lightcyan", "lightcyan1", "lightcyan2", "lightcyan3", "lightcyan4", "lightgoldenrod", "lightgoldenrod1", "lightgoldenrod2", "lightgoldenrod3", "lightgoldenrod4", "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightpink1", "lightpink2", "lightpink3", "lightpink4", "lightsalmon", "lightsalmon1", "lightsalmon2", "lightsalmon3", "lightsalmon4", "lightseagreen", "lightskyblue", "lightskyblue1", "lightskyblue2", "lightskyblue3", "lightskyblue4", "lightslateblue", "lightslategray", "lightslategrey", "lightsteelblue", "lightsteelblue1", "lightsteelblue2", "lightsteelblue3", "lightsteelblue4", "lightyellow", "lightyellow1", "lightyellow2", "lightyellow3", "lightyellow4", "limegreen", "linen", "magenta", "magenta1", "magenta2", "magenta3", "magenta4", "maroon", "maroon1", "maroon2", "maroon3", "maroon4", "mediumaquamarine", "mediumblue", "mediumorchid", "mediumorchid1", "mediumorchid2", "mediumorchid3", "mediumorchid4", "mediumpurple", "mediumpurple1", "mediumpurple2", "mediumpurple3", "mediumpurple4", "mediumseagreen", "mediumslateblue", "mediumspringgreen", "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "mistyrose1", "mistyrose2", "mistyrose3", "mistyrose4", "moccasin", "navajowhite", "navajowhite1", "navajowhite2", "navajowhite3", "navajowhite4", "navy", "navyblue", "oldlace", "olivedrab", "olivedrab1", "olivedrab2", "olivedrab3", "olivedrab4", "orange", "orange1", "orange2", "orange3", "orange4", "orangered", "orangered1", "orangered2", "orangered3", "orangered4", "orchid", "orchid1", "orchid2", "orchid3", "orchid4", "palegoldenrod", "palegreen", "palegreen1", "palegreen2", "palegreen3", "palegreen4", "paleturquoise", "paleturquoise1", "paleturquoise2", "paleturquoise3", "paleturquoise4", "palevioletred", "palevioletred1", "palevioletred2", "palevioletred3", "palevioletred4", "papayawhip", "peachpuff", "peachpuff1", "peachpuff2", "peachpuff3", "peachpuff4", "peru", "pink", "pink1", "pink2", "pink3", "pink4", "plum", "plum1", "plum2", "plum3", "plum4", "powderblue", "purple", "purple1", "purple2", "purple3", "purple4", "red", "red1", "red2", "red3", "red4", "rosybrown", "rosybrown1", "rosybrown2", "rosybrown3", "rosybrown4", "royalblue", "royalblue1", "royalblue2", "royalblue3", "royalblue4", "saddlebrown", "salmon", "salmon1", "salmon2", "salmon3", "salmon4", "sandybrown", "seagreen", "seagreen1", "seagreen2", "seagreen3", "seagreen4", "seashell", "seashell1", "seashell2", "seashell3", "seashell4", "sienna", "sienna1", "sienna2", "sienna3", "sienna4", "skyblue", "skyblue1", "skyblue2", "skyblue3", "skyblue4", "slateblue", "slateblue1", "slateblue2", "slateblue3", "slateblue4", "slategray", "slategray1", "slategray2", "slategray3", "slategray4", "slategrey", "snow", "snow1", "snow2", "snow3", "snow4", "springgreen", "springgreen1", "springgreen2", "springgreen3", "springgreen4", "steelblue", "steelblue1", "steelblue2", "steelblue3", "steelblue4", "tan", "tan1", "tan2", "tan3", "tan4", "thistle", "thistle1", "thistle2", "thistle3", "thistle4", "tomato", "tomato1", "tomato2", "tomato3", "tomato4", "turquoise", "turquoise1", "turquoise2", "turquoise3", "turquoise4", "violet", "violetred", "violetred1", "violetred2", "violetred3", "violetred4", "wheat", "wheat1", "wheat2", "wheat3", "wheat4", "whitesmoke", "yellow", "yellow1", "yellow2", "yellow3", "yellow4", "yellowgreen")
+
+eukdivision_palette <- c("Other"="slategrey","Stramenopiles"="skyblue","Alveolata"="sienna","Chlorophyta"="seagreen")
+eukclass_palette <- c('Other'="slategrey", 'Bacillariophyceae'="#CC6677", 'Syndiniales'="#661100",'Dinophyceae'="#88CCEE", 'Oligohymenophorea'="#999933", 'Coccidiomorphea'="#117733", 'Ulvophyceae'="#DDCC77")
+euksymbfamily_palette <- c("Other"="slategrey","Symbiodiniaceae"="#6699CC")
+euksymbgenus_palette <- c("Other"="slategrey","Durusdinium"="#DDCC77","Cladocopium"="#999933","Breviolum"="#661100","Symbiodinium"="#6699CC")
+```
+
+# Colour Palettes
+```{r}
+install.packages("devtools") 
+devtools::install_github("johannesbjork/LaCroixColoR")
+
+library(LaCroixColoR)
+
+#Discrete Palettes
+#lacroix_palette("Pamplemousse", type = "discrete")
+#lacroix_palette("PassionFruit", type = "discrete")
+#lacroix_palette("PeachPear", type = "discrete")
+
+#Continuous
+#lacroix_palette("Pamplemousse", n = 50, type = "continuous")
+#lacroix_palette("PassionFruit", n = 50, type = "continuous")
+#lacroix_palette("PassionFruit", n = 25, type = "continuous")
+#lacroix_palette("PassionFruit", n = 10, type = "continuous")
+#lacroix_palette("PeachPear", n = 50, type = "continuous")
+
+#Paired Palettes
+#lacroix_palette(type = "paired")
+
+```
+
+
+##################################################################################
+##################################################################################
+##                                 Checkpoint                                   ##
+##################################################################################
+##################################################################################
+
+#Good chance to save the phyloseq object and space without any analyses run.
+```{r}
+#save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_diel_preanalysischeckpoint.RData")
+```
+
+#Bring the environment back to this point to move forward
+```{r}
+load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_diel_preanalysischeckpoint.RData")
+```
+
+
+
+##################################################################################
+##################################################################################
+##                                     Stats                                    ##
+##################################################################################
+##################################################################################
+
+
+##################################################################################
+##                                    Alpha                                     ##
+##################################################################################
+
+#PSTR w/o SYMB **SHANNON**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(diel_pstr) > 0, diel_pstr)
+tab.shan <- microbiome::alpha(ad_pstr, index = "diversity_shannon")
+kable(head(tab.shan))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab.shan$diversity_shannon 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_shan <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Shannon)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_compare_means(comparisons = fam.pairs) +
+                            #stat_pvalue_manual(Shannon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,4.5) +
+                            ylab("Shannon Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+                            
+                        
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/alpha/pstr_dieltime_alpha_shannon_ylim.pdf", width = 6, height = 6)
+pstr_dieltime_shan
+dev.off()
+```
+
+#PSTR SYMB ONLY **SHANNON**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(dielsymb_pstr) > 0, dielsymb_pstr)
+tab.shan <- microbiome::alpha(ad_pstr, index = "diversity_shannon")
+kable(head(tab.shan))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab.shan$diversity_shannon 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_shan <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Shannon)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_compare_means(comparisons = fam.pairs) +
+                            #stat_pvalue_manual(Shannon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,3.5) + 
+                            ylab("Shannon Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+                            
+                        
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/alpha/pstr_symb_dieltime_alpha_shannon_ylim2.pdf", width = 6, height = 6)
+pstr_dieltime_shan
+dev.off()
+```
+
+#PSTR w/o SYMB **rich**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(diel_pstr) > 0, diel_pstr)
+tab.rich <- richness(ad_pstr)
+kable(head(tab.rich))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Richness <- tab.rich$observed
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_rich <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Richness)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_compare_means(comparisons = fam.pairs) +
+                            #stat_pvalue_manual(richnon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,750) +
+                            ylab("Richness Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1))
+                            
+                        
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/alpha/pstr_dieltime_alpha_rich_ylim.pdf", width = 6, height = 6)
+pstr_dieltime_rich
+dev.off()
+```
+
+#PSTR SYMB ONLY **rich**
+```{r}
+
+ad_pstr <- prune_taxa(taxa_sums(dielsymb_pstr) > 0, dielsymb_pstr)
+tab.rich <- richness(ad_pstr)
+kable(head(tab.rich))
+
+ps1.meta <- meta(ad_pstr)
+kable(head(ps1.meta))
+ps1.meta$Richness <- tab.rich$observed 
+
+# create a list of pairwise comparisons
+fam <- unique(ps1.meta$diel_time) # get the variables
+
+# make a pairwise list that we want to compare.
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+
+print(fam.pairs)
+
+pstr_dieltime_rich <- ggplot(ps1.meta, aes(x = factor(diel_time, levels= timeorder), y = Richness)) +
+                            geom_violinhalf(mapping = aes(fill = diel_time), scale = "width", width = 0.6, flip= TRUE, trim = FALSE) +
+                            scale_fill_manual(values = diel_palette_ordered) +
+                            scale_x_discrete(breaks=timeorder) +
+                            geom_half_boxplot(mapping = aes(fill = diel_time),
+                                              outlier.size = 0.01, width = 0.3, size = 0.5, alpha = 0.4, side = "r") +
+                            #stat_compare_means(comparisons = fam.pairs) +
+                            #stat_pvalue_manual(richnon, hide.ns = F, y.position = y.position, label = "FDR.signif", 
+                            #                   size = p.val.size, tip.length = 0) +
+                            theme_classic() +
+                            ylim(0,750) +
+                            ylab("Richness Diversity") +
+                            xlab("Time of day") +
+                            theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+                            
+                        
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/alpha/pstr_symb_dieltime_alpha_rich_ylim.pdf", width = 6, height = 6)
+pstr_dieltime_rich
+dev.off()
+
+```
+
+
+##################################################################################
+##                                 Aitchison PCA                                ##
+##################################################################################
+
+#################################################################################
+##############                     All Species                     ##############
+#################################################################################
+
+```{r}
+
+```
+
+
+#################################################################################
+##############                        PSTR                         ##############
+#################################################################################
+
+#PCA w/o SYMBIONTS
+```{r}
+pstr_clr <- microbiome::transform(diel_pstr, 'clr', shift = 1)
+
+pstr_clr.ord <- ordinate(pstr_clr, "RDA", "euclidean")
+
+#pca_pstr_title <- expression(paste("18S Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_pstr_diel = plot_ordination(pstr_clr, pstr_clr.ord, 
+                                    shape=1,
+                                    color="diel_time"#,
+                                    #title=pca_pstr_title
+                                    ) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette_ordered) + 
+                                    stat_ellipse(lwd=1)
+
+pca_pstr_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/pstr_pca_dieltime_clean.pdf", width = 6, height = 6)
+pca_pstr_diel
+dev.off()
+```
+
+#PCA w/o SYMBIONTS **OTHER VARIABLES**
+```{r}
+pstr_clr <- microbiome::transform(diel_pstr, 'clr', shift = 1)
+
+pstr_clr.ord <- ordinate(pstr_clr, "RDA", "euclidean")
+
+#pca_pstr_title <- expression(paste("18S Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_pstr_diel = plot_ordination(pstr_clr, pstr_clr.ord, 
+                                    shape=1,
+                                    color="diel_code",
+                                    title=pca_pstr_title) + 
+                                    theme_classic() + 
+                                    #geom_point(aes(color = c("midnightblue", "gold")), alpha = 0.8, size = 3) + 
+                                    #scale_colour_manual(values=diel_palette_ordered) + 
+                                    stat_ellipse(lwd=1)
+
+pca_pstr_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/pstr_pca_variable_clean.pdf", width = 6, height = 6)
+pca_pstr_diel
+dev.off()
+```
+
+#PCA SYMBIONTS
+```{r}
+pstr_clr <- microbiome::transform(dielsymb_pstr, 'clr', shift = 1)
+
+pstr_clr.ord <- ordinate(pstr_clr, "RDA", "euclidean")
+
+#pca_pstr_title <- expression(paste("Symbiont Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_pstr_diel = plot_ordination(pstr_clr, pstr_clr.ord, 
+                                    shape=1,
+                                    color="diel_time"#,
+                                    #title=pca_pstr_title
+                                    ) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette_ordered) + 
+                                    stat_ellipse(lwd=1)
+
+pca_pstr_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/pstr_symb_pca_dieltime_clean.pdf", width = 6, height = 6)
+pca_pstr_diel
+dev.off()
+```
+
+
+#################################################################################
+##############                        OANN                         ##############
+#################################################################################
+
+#PCA w/o SYMBIONTS
+```{r}
+oann_clr <- microbiome::transform(diel_oann, 'clr', shift = 1)
+
+oann_clr.ord <- ordinate(oann_clr, "RDA", "euclidean")
+
+pca_oann_title <- expression(paste("18S Aitchison distance PCA for ", italic("O. annularis "), "through time"))
+
+pca_oann_diel = plot_ordination(oann_clr, oann_clr.ord, 
+                                    shape=1,
+                                    color="diel_time",
+                                    title=pca_oann_title) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette) + 
+                                    stat_ellipse(lwd=1)
+
+pca_oann_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/oann_pca_dieltime.pdf", width = 12, height = 8)
+pca_oann_diel
+dev.off()
+```
+
+#PCA SYMBIONTS
+```{r}
+oann_clr <- microbiome::transform(dielsymb_oann, 'clr', shift = 1)
+
+oann_clr.ord <- ordinate(oann_clr, "RDA", "euclidean")
+
+pca_oann_title <- expression(paste("Symbiont Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_oann_diel = plot_ordination(oann_clr, oann_clr.ord, 
+                                    shape=1,
+                                    color="diel_time",
+                                    title=pca_oann_title) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette) + 
+                                    stat_ellipse(lwd=1)
+
+pca_oann_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/oann_symb_pca_dieltime.pdf", width = 12, height = 8)
+pca_oann_diel
+dev.off()
+```
+
+#################################################################################
+##############                        DLAB                         ##############
+#################################################################################
+
+#PCA w/o SYMBIONTS
+```{r}
+dlab_clr <- microbiome::transform(diel_dlab, 'clr', shift = 1)
+
+dlab_clr.ord <- ordinate(dlab_clr, "RDA", "euclidean")
+
+pca_dlab_title <- expression(paste("18S Aitchison distance PCA for ", italic("D. labyrinthiformes "), "through time"))
+
+pca_dlab_diel = plot_ordination(dlab_clr, dlab_clr.ord, 
+                                    shape=1,
+                                    color="diel_time",
+                                    title=pca_dlab_title) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette) + 
+                                    stat_ellipse(lwd=1)
+
+pca_dlab_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/dlab_pca_dieltime.pdf", width = 12, height = 8)
+pca_dlab_diel
+dev.off()
+```
+
+#PCA SYMBIONTS
+```{r}
+dlab_clr <- microbiome::transform(dielsymb_dlab, 'clr', shift = 1)
+
+dlab_clr.ord <- ordinate(dlab_clr, "RDA", "euclidean")
+
+pca_dlab_title <- expression(paste("Symbiont Aitchison distance PCA for ", italic("P. strigosa "), "through time"))
+
+pca_dlab_diel = plot_ordination(dlab_clr, dlab_clr.ord, 
+                                    shape=1,
+                                    color="diel_time",
+                                    title=pca_dlab_title) + 
+                                    theme_classic() + 
+                                    geom_point(aes(color = diel_time), alpha = 0.8, size = 3) + 
+                                    scale_colour_manual(values=diel_palette) + 
+                                    stat_ellipse(lwd=1)
+
+pca_dlab_diel
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/beta/dlab_symb_pca_dieltime.pdf", width = 12, height = 8)
+pca_dlab_diel
+dev.off()
+```
+
+
+
+##################################################################################
+#######                             Bubble Plots                            ######
+#######                            (Standard Dev)                           ######
+##################################################################################
+
+#################################################################################
+##############                        PSTR                         ##############
+#################################################################################
+
+# PSTR by diel time w/ STANDARD DEV **ORDER LEVEL W/O SYMBIODINIACEAE**
+```{r}
+sd_diel_pstr <- diel_pstr %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr <- merge_samples(diel_pstr, diel_pstr@sam_data$diel_time) 
+type_taxa_diel_pstr <- bubSD_diel_pstr %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr <- type_taxa_diel_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr <- data.table(type_taxa_diel_pstr)
+
+dat_diel_pstr$SD <- sd_diel_pstr$sd
+# convert Division to a character vector from a factor because R
+dat_diel_pstr$Order <- as.character(dat_diel_pstr$Order)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Order"]
+# Change name to remainder of Division less than 2%
+dat_diel_pstr[(median <= 0.01), Order := "Below Threshold"]
+dat_diel_pstr[(Order == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_pstr_title <- expression(paste("Microbial Orders within ", italic("P. strigosa")))
+
+bpSD_diel_pstr <- ggplot(dat_diel_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Order, levels=eukorder))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Order (Excluding Symbiodiniaceae)", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_pstr_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/pstr_bpSD_diel_order.pdf", width = 13, height = 12)
+bpSD_diel_pstr
+dev.off()
+```
+
+# PSTR by diel time w/ STANDARD DEV **GENUS LEVEL W/O SYMBIODINIACEAE**
+```{r}
+
+sd_diel_pstr <- diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr <- merge_samples(diel_pstr, diel_pstr@sam_data$diel_time) 
+type_taxa_diel_pstr <- bubSD_diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr <- type_taxa_diel_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr <- data.table(type_taxa_diel_pstr)
+
+dat_diel_pstr$SD <- sd_diel_pstr$sd
+# convert Division to a character vector from a factor because R
+dat_diel_pstr$Genus <- as.character(dat_diel_pstr$Genus)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Division less than 2%
+dat_diel_pstr[(median <= 0.01), Genus := "Below Threshold"]
+dat_diel_pstr[(Genus == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_pstr_title <- expression(paste("Eukaryotic Genus (Excluding Symbiodiniaceae) within ", italic("P. strigosa")))
+
+bpSD_diel_pstr <- ggplot(dat_diel_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=eukgenus))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Genus", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  scale_fill_manual(values = eukdivision_palette, breaks=c('Other', 'Stramenopiles', 'Alveolata', 'Chlorophyta')) +
+  scale_color_manual(values = eukdivision_palette,breaks=c('Other', 'Stramenopiles', 'Alveolata', 'Chlorophyta')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  #ggtitle(label=bubSD_diel_pstr_title, subtitle = "With median relative abundance above 1%") + 
+  geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/pstr_bpSD_diel_genus_clean.pdf", width = 6, height = 4.5)
+bpSD_diel_pstr
+dev.off()
+```
+
+
+# PSTR by diel time w/ STANDARD DEV **GENUS LEVEL W/O SYMBIODINIACEAE** DIVISION GOES TO CLASS
+```{r}
+
+sd_diel_pstr <- diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr <- merge_samples(diel_pstr, diel_pstr@sam_data$diel_time) 
+type_taxa_diel_pstr <- bubSD_diel_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr <- type_taxa_diel_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr <- data.table(type_taxa_diel_pstr)
+
+dat_diel_pstr$SD <- sd_diel_pstr$sd
+# convert Class to a character vector from a factor because R
+dat_diel_pstr$Genus <- as.character(dat_diel_pstr$Genus)
+# group dataframe by Class, calculate median rel. abundance
+dat_diel_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Class less than 2%
+dat_diel_pstr[(median <= 0.01), Genus := "Below Threshold"]
+dat_diel_pstr[(Genus == "Below Threshold"), Class := "Other"]
+
+bubSD_diel_pstr_title <- expression(paste("Eukaryotic Genus (Excluding Symbiodiniaceae) within ", italic("P. strigosa")))
+
+bpSD_diel_pstr <- ggplot(dat_diel_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=eukgenus))) + geom_point(aes(size = Abundance, fill=Class, color=Class), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Genus", size = "Relative Abundance %", fill="Class") + theme_bw() +  
+  scale_fill_manual(values = eukclass_palette, breaks=c('Other', 'Bacillariophyceae', 'Syndiniales', 'Dinophyceae',   'Oligohymenophorea', 'Coccidiomorphea', 'Ulvophyceae')) +
+  scale_color_manual(values = eukclass_palette,breaks=c('Other', 'Bacillariophyceae', 'Syndiniales', 'Dinophyceae',   'Oligohymenophorea', 'Coccidiomorphea', 'Ulvophyceae')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  #ggtitle(label=bubSD_diel_pstr_title, subtitle = "With median relative abundance above 1%") + 
+  geom_point(aes(size=Abundance+SD, fill = Class, color=Class), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Class, color=Class), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr
+
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/pstr_bpSD_diel_genus_clean_newtax.pdf", width = 6, height = 4.5)
+bpSD_diel_pstr
+dev.off()
+```
+
+
+# PSTR by diel time w/ STANDARD DEV **SPECIES LEVEL W/O SYMBIODINIACEAE**
+```{r}
+
+sd_diel_pstr <- diel_pstr %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_pstr <- merge_samples(diel_pstr, diel_pstr@sam_data$diel_time) 
+type_taxa_diel_pstr <- bubSD_diel_pstr %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_pstr <- type_taxa_diel_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_pstr <- data.table(type_taxa_diel_pstr)
+
+dat_diel_pstr$SD <- sd_diel_pstr$sd
+# convert Division to a character vector from a factor because R
+dat_diel_pstr$Species <- as.character(dat_diel_pstr$Species)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Species"]
+# Change name to remainder of Division less than 2%
+dat_diel_pstr[(median <= 0.01), Species := "Below Threshold"]
+dat_diel_pstr[(Species == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_pstr_title <- expression(paste("Eukaryotic Species (Excluding Symbiodiniaceae) within ", italic("P. strigosa")))
+
+bpSD_diel_pstr <- ggplot(dat_diel_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Species, levels=eukspecies))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Species", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_pstr_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/pstr_bpSD_diel_species.pdf", width = 13, height = 12)
+bpSD_diel_pstr
+dev.off()
+```
+
+# PSTR by diel time w/ STANDARD DEV **SPECIES LEVEL SYMBIODINIACEAE**
+```{r}
+sd_dielsymb_pstr <- dielsymb_pstr %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_dielsymb_pstr <- merge_samples(dielsymb_pstr, dielsymb_pstr@sam_data$diel_time) 
+type_taxa_dielsymb_pstr <- bubSD_dielsymb_pstr %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_dielsymb_pstr <- type_taxa_dielsymb_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_dielsymb_pstr <- data.table(type_taxa_dielsymb_pstr)
+
+dat_dielsymb_pstr$SD <- sd_dielsymb_pstr$sd
+# convert Genus to a character vector from a factor because R
+dat_dielsymb_pstr$Species <- as.character(dat_dielsymb_pstr$Species)
+# group dataframe by Genus, calculate median rel. abundance
+dat_dielsymb_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Species"]
+# Change name to remainder of Genus less than 2%
+dat_dielsymb_pstr[(median <= 0.01), Species := "Below Threshold"]
+dat_dielsymb_pstr[(Species == "Below Threshold"), Genus := "Other"]
+
+bubSD_dielsymb_pstr_title <- expression(paste("Species of Symbiodiniaceae within ", italic("P. strigosa")))
+
+bpSD_dielsymb_pstr <- ggplot(dat_dielsymb_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Species, levels=eukspecies))) + geom_point(aes(size = Abundance, fill=Genus, color=Genus), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Symbiodiniaceae Species", size = "Relative Abundance %", fill="Genus") + theme_bw() +  
+  scale_fill_manual(values = euksymbgenus_palette, breaks=c('Other', 'Durusdinium', 'Cladocopium', 'Breviolum', 'Symbiodinium')) +
+  scale_color_manual(values = euksymbgenus_palette,breaks=c('Other', 'Durusdinium', 'Cladocopium', 'Breviolum', 'Symbiodinium')) +  
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_dielsymb_pstr_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Genus, color=Genus), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Genus, color=Genus), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_dielsymb_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/pstr_symb_bpSD_diel_species.pdf", width = 5.25, height = 3)
+bpSD_dielsymb_pstr
+dev.off()
+```
+
+# PSTR by diel time w/ STANDARD DEV *Genus LEVEL SYMBIODINIACEAE**
+```{r}
+sd_dielsymb_pstr <- dielsymb_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_dielsymb_pstr <- merge_samples(dielsymb_pstr, dielsymb_pstr@sam_data$diel_time) 
+type_taxa_dielsymb_pstr <- bubSD_dielsymb_pstr %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_dielsymb_pstr <- type_taxa_dielsymb_pstr %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_dielsymb_pstr <- data.table(type_taxa_dielsymb_pstr)
+
+dat_dielsymb_pstr$SD <- sd_dielsymb_pstr$sd
+# convert Genus to a character vector from a factor because R
+dat_dielsymb_pstr$Genus <- as.character(dat_dielsymb_pstr$Genus)
+# group dataframe by Genus, calculate median rel. abundance
+dat_dielsymb_pstr[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Genus less than 2%
+dat_dielsymb_pstr[(median <= 0.01), Genus := "Below Threshold"]
+dat_dielsymb_pstr[(Genus == "Below Threshold"), Family := "Other"]
+
+bubSD_dielsymb_pstr_title <- expression(paste("Genera of Symbiodiniaceae within ", italic("P. strigosa")))
+
+bpSD_dielsymb_pstr <- ggplot(dat_dielsymb_pstr[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=eukgenus))) + geom_point(aes(size = Abundance, fill=Family, color=Family), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Genera", size = "Relative Abundance %", fill="Family") + theme_bw() +  
+  scale_fill_manual(values = euksymbfamily_palette, breaks=c('Other', 'Symbiodiniaceae')) +
+  scale_color_manual(values = euksymbfamily_palette,breaks=c('Other', 'Symbiodiniaceae')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_dielsymb_pstr_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Family, color=Family), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Family, color=Family), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_dielsymb_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/pstr_symb_bpSD_diel_genusfamily.pdf", width = 5.25, height = 3)
+bpSD_dielsymb_pstr
+dev.off()
+```
+
+
+#################################################################################
+##############                        OANN                         ##############
+#################################################################################
+
+# oann by diel time w/ STANDARD DEV **ORDER LEVEL W/O SYMBIODINIACEAE**
+```{r}
+sd_diel_oann <- diel_oann %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_oann <- merge_samples(diel_oann, diel_oann@sam_data$diel_time) 
+type_taxa_diel_oann <- bubSD_diel_oann %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_oann <- type_taxa_diel_oann %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_oann <- data.table(type_taxa_diel_oann)
+
+dat_diel_oann$SD <- sd_diel_oann$sd
+# convert Division to a character vector from a factor because R
+dat_diel_oann$Order <- as.character(dat_diel_oann$Order)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_oann[, median := median(Abundance, na.rm = FALSE), 
+    by = "Order"]
+# Change name to remainder of Division less than 2%
+dat_diel_oann[(median <= 0.01), Order := "Below Threshold"]
+dat_diel_oann[(Order == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_oann_title <- expression(paste("Eukaryotic Orders within ", italic("O. annularis")))
+
+bpSD_diel_oann <- ggplot(dat_diel_oann[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Order, levels=eukorder))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Order (Excluding Symbiodiniaceae)", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_oann_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/oann_bpSD_diel_order.pdf", width = 13, height = 12)
+bpSD_diel_oann
+dev.off()
+```
+
+# oann by diel time w/ STANDARD DEV **GENUS LEVEL W/O SYMBIODINIACEAE**
+```{r}
+
+sd_diel_oann <- diel_oann %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_oann <- merge_samples(diel_oann, diel_oann@sam_data$diel_time) 
+type_taxa_diel_oann <- bubSD_diel_oann %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_oann <- type_taxa_diel_oann %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_oann <- data.table(type_taxa_diel_oann)
+
+dat_diel_oann$SD <- sd_diel_oann$sd
+# convert Division to a character vector from a factor because R
+dat_diel_oann$Genus <- as.character(dat_diel_oann$Genus)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_oann[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Division less than 2%
+dat_diel_oann[(median <= 0.01), Genus := "Below Threshold"]
+dat_diel_oann[(Genus == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_oann_title <- expression(paste("Eukaryotic Genera (Excluding Symbiodiniaceae) within ", italic("O. annularis")))
+
+bpSD_diel_oann <- ggplot(dat_diel_oann[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=eukgenus))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Genus", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_oann_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/oann_bpSD_diel_genus.pdf", width = 13, height = 12)
+bpSD_diel_oann
+dev.off()
+```
+
+# oann by diel time w/ STANDARD DEV **SPECIES LEVEL W/O SYMBIODINIACEAE**
+```{r}
+
+sd_diel_oann <- diel_oann %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_oann <- merge_samples(diel_oann, diel_oann@sam_data$diel_time) 
+type_taxa_diel_oann <- bubSD_diel_oann %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_oann <- type_taxa_diel_oann %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_oann <- data.table(type_taxa_diel_oann)
+
+dat_diel_oann$SD <- sd_diel_oann$sd
+# convert Division to a character vector from a factor because R
+dat_diel_oann$Species <- as.character(dat_diel_oann$Species)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_oann[, median := median(Abundance, na.rm = FALSE), 
+    by = "Species"]
+# Change name to remainder of Division less than 2%
+dat_diel_oann[(median <= 0.01), Species := "Below Threshold"]
+dat_diel_oann[(Species == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_oann_title <- expression(paste("Eukaryotic Species (Excluding Symbiodiniaceae) within ", italic("O. annularis")))
+
+bpSD_diel_oann <- ggplot(dat_diel_oann[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Species, levels=eukspecies))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Species", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_oann_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/oann_bpSD_diel_species.pdf", width = 13, height = 12)
+bpSD_diel_oann
+dev.off()
+```
+
+# oann by diel time w/ STANDARD DEV **SPECIES LEVEL SYMBIODINIACEAE**
+```{r}
+sd_dielsymb_oann <- dielsymb_oann %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_dielsymb_oann <- merge_samples(dielsymb_oann, dielsymb_oann@sam_data$diel_time) 
+type_taxa_dielsymb_oann <- bubSD_dielsymb_oann %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_dielsymb_oann <- type_taxa_dielsymb_oann %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_dielsymb_oann <- data.table(type_taxa_dielsymb_oann)
+
+dat_dielsymb_oann$SD <- sd_dielsymb_oann$sd
+# convert Genus to a character vector from a factor because R
+dat_dielsymb_oann$Species <- as.character(dat_dielsymb_oann$Species)
+# group dataframe by Genus, calculate median rel. abundance
+dat_dielsymb_oann[, median := median(Abundance, na.rm = FALSE), 
+    by = "Species"]
+# Change name to remainder of Genus less than 2%
+dat_dielsymb_oann[(median <= 0.01), Species := "Below Threshold"]
+dat_dielsymb_oann[(Species == "Below Threshold"), Genus := "Other"]
+
+bubSD_dielsymb_oann_title <- expression(paste("Species of Symbiodiniaceae within ", italic("O. annularis")))
+
+bpSD_dielsymb_oann <- ggplot(dat_dielsymb_oann[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Species, levels=eukspecies))) + geom_point(aes(size = Abundance, fill=Genus, color=Genus), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Symbiodiniaceae Species", size = "Relative Abundance %", fill="Genus") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_dielsymb_oann_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Genus, color=Genus), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Genus, color=Genus), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_dielsymb_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/oann_symb_bpSD_diel_species.pdf", width = 13, height = 12)
+bpSD_dielsymb_oann
+dev.off()
+```
+
+
+
+#################################################################################
+##############                        DLAB                         ##############
+#################################################################################
+
+# dlab by diel time w/ STANDARD DEV **ORDER LEVEL W/O SYMBIODINIACEAE**
+```{r}
+sd_diel_dlab <- diel_dlab %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_dlab <- merge_samples(diel_dlab, diel_dlab@sam_data$diel_time) 
+type_taxa_diel_dlab <- bubSD_diel_dlab %>% 
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_dlab <- type_taxa_diel_dlab %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_dlab <- data.table(type_taxa_diel_dlab)
+
+dat_diel_dlab$SD <- sd_diel_dlab$sd
+# convert Division to a character vector from a factor because R
+dat_diel_dlab$Order <- as.character(dat_diel_dlab$Order)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_dlab[, median := median(Abundance, na.rm = FALSE), 
+    by = "Order"]
+# Change name to remainder of Division less than 2%
+dat_diel_dlab[(median <= 0.01), Order := "Below Threshold"]
+dat_diel_dlab[(Order == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_dlab_title <- expression(paste("Eukaryotic Orders within ", italic("D. labyrinthiformes")))
+
+bpSD_diel_dlab <- ggplot(dat_diel_dlab[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Order, levels=eukorder))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Order (Excluding Symbiodiniaceae)", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_dlab_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/dlab_bpSD_diel_order.pdf", width = 13, height = 12)
+bpSD_diel_dlab
+dev.off()
+```
+
+# dlab by diel time w/ STANDARD DEV **GENUS LEVEL W/O SYMBIODINIACEAE**
+```{r}
+
+sd_diel_dlab <- diel_dlab %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_dlab <- merge_samples(diel_dlab, diel_dlab@sam_data$diel_time) 
+type_taxa_diel_dlab <- bubSD_diel_dlab %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_dlab <- type_taxa_diel_dlab %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_dlab <- data.table(type_taxa_diel_dlab)
+
+dat_diel_dlab$SD <- sd_diel_dlab$sd
+# convert Division to a character vector from a factor because R
+dat_diel_dlab$Genus <- as.character(dat_diel_dlab$Genus)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_dlab[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+# Change name to remainder of Division less than 2%
+dat_diel_dlab[(median <= 0.01), Genus := "Below Threshold"]
+dat_diel_dlab[(Genus == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_dlab_title <- expression(paste("Eukaryotic Genera (Excluding Symbiodiniaceae) within ", italic("D. labyrinthiformes")))
+
+bpSD_diel_dlab <- ggplot(dat_diel_dlab[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Genus, levels=eukgenus))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Genus", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_dlab_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/dlab_bpSD_diel_genus.pdf", width = 13, height = 12)
+bpSD_diel_dlab
+dev.off()
+```
+
+# dlab by diel time w/ STANDARD DEV **SPECIES LEVEL W/O SYMBIODINIACEAE**
+```{r}
+
+sd_diel_dlab <- diel_dlab %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_diel_dlab <- merge_samples(diel_dlab, diel_dlab@sam_data$diel_time) 
+type_taxa_diel_dlab <- bubSD_diel_dlab %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_diel_dlab <- type_taxa_diel_dlab %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_diel_dlab <- data.table(type_taxa_diel_dlab)
+
+dat_diel_dlab$SD <- sd_diel_dlab$sd
+# convert Division to a character vector from a factor because R
+dat_diel_dlab$Species <- as.character(dat_diel_dlab$Species)
+# group dataframe by Division, calculate median rel. abundance
+dat_diel_dlab[, median := median(Abundance, na.rm = FALSE), 
+    by = "Species"]
+# Change name to remainder of Division less than 2%
+dat_diel_dlab[(median <= 0.01), Species := "Below Threshold"]
+dat_diel_dlab[(Species == "Below Threshold"), Division := "Other"]
+
+bubSD_diel_dlab_title <- expression(paste("Eukaryotic Species (Excluding Symbiodiniaceae) within ", italic("D. labyrinthiformes")))
+
+bpSD_diel_dlab <- ggplot(dat_diel_dlab[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Species, levels=eukspecies))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Eukaryotic Species", size = "Relative Abundance %", fill="Division") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_diel_dlab_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_diel_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/dlab_bpSD_diel_species.pdf", width = 13, height = 12)
+bpSD_diel_dlab
+dev.off()
+```
+
+# dlab by diel time w/ STANDARD DEV **SPECIES LEVEL SYMBIODINIACEAE**
+```{r}
+sd_dielsymb_dlab <- dielsymb_dlab %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, diel_time)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+
+bubSD_dielsymb_dlab <- merge_samples(dielsymb_dlab, dielsymb_dlab@sam_data$diel_time) 
+type_taxa_dielsymb_dlab <- bubSD_dielsymb_dlab %>% 
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+
+type_taxa_dielsymb_dlab <- type_taxa_dielsymb_dlab %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+
+library(data.table)
+# create dataframe from phyloseq object
+dat_dielsymb_dlab <- data.table(type_taxa_dielsymb_dlab)
+
+dat_dielsymb_dlab$SD <- sd_dielsymb_dlab$sd
+# convert Genus to a character vector from a factor because R
+dat_dielsymb_dlab$Species <- as.character(dat_dielsymb_dlab$Species)
+# group dataframe by Genus, calculate median rel. abundance
+dat_dielsymb_dlab[, median := median(Abundance, na.rm = FALSE), 
+    by = "Species"]
+# Change name to remainder of Genus less than 2%
+dat_dielsymb_dlab[(median <= 0.01), Species := "Below Threshold"]
+dat_dielsymb_dlab[(Species == "Below Threshold"), Genus := "Other"]
+
+bubSD_dielsymb_dlab_title <- expression(paste("Species of Symbiodiniaceae within ", italic("D. labyrinthiformes")))
+
+bpSD_dielsymb_dlab <- ggplot(dat_dielsymb_dlab[Abundance > 0], aes(x = factor(Sample, levels=timeorder), y = factor(Species, levels=eukspecies))) + geom_point(aes(size = Abundance, fill=Genus, color=Genus), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs( x= "Time of Day", y = "Symbiodiniaceae Species", size = "Relative Abundance %", fill="Genus") + theme_bw() +  
+  #scale_fill_manual(values = palette, breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) +
+  #scale_color_manual(values = palette,breaks=c('Verrucomicrobiota', 'Proteobacteria', 'Firmicutes', 'Cyanobacteria', 'Bacteroidota', 'Bacteria IS', 'Other')) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=bubSD_dielsymb_dlab_title, subtitle = "With median relative abundance above 1%") + geom_point(aes(size=Abundance+SD, fill = Genus, color=Genus), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Genus, color=Genus), alpha = 1, shape=21) + guides(color = "none", fill = guide_legend(override.aes = list(size = 3)))
+bpSD_dielsymb_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/community/dlab_symb_bpSD_diel_species.pdf", width = 13, height = 12)
+bpSD_dielsymb_dlab
+dev.off()
+```
+
+
+##################################################################################
+##################################################################################
+###                                   ANCOM-BC                                 ###
+##################################################################################
+##################################################################################
+
+```{r}
+library(ANCOMBC)
+library(tidyverse)
+library(caret)
+library(DT)
+```
+
+
+#PSTR
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_12A_6A <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T12A' |
+                                             diel_pstr@sam_data$diel_time=='T6A')
+
+ancom_pstr_12A_6A = ancombc2(data = pstr_12A_6A, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_12A_6A = ancom_pstr_12A_6A$res
+res_prim_pstr_12A_6A
+df_res_pstr_12A_6A = res_prim_pstr_12A_6A %>% dplyr::filter(`diff_diel_timeT6A`) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_12A_6A = df_res_pstr_12A_6A %>% 
+    arrange(desc(`lfc_diel_timeT6A`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6A`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_12A_6A$taxon = factor(df_fig_res_pstr_12A_6A$taxon, levels = df_fig_res_pstr_12A_6A$taxon)
+df_fig_res_pstr_12A_6A$direct = factor(df_fig_res_pstr_12A_6A$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_12A_6A.df = as.data.frame(df_fig_res_pstr_12A_6A)
+write.table(df_fig_res_pstr_12A_6A.df, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_12A_6A.tsv")
+
+
+fig_res_pstr_12A_6A = df_fig_res_pstr_12A_6A %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6A`, fill = `lfc_diel_timeT6A`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6A` - `se_diel_timeT6A`, ymax = `lfc_diel_timeT6A` + `se_diel_timeT6A`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T12A to T6A", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_12A_6A
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_12A_6A.pdf", width = 13, height = 20)
+fig_res_pstr_12A_6A
+dev.off()
+
+save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_12A_6A.RData")
+#load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_rbd_AHvsTR.RData")
+
+
+
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_6A_12P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T6A' |
+                                             diel_pstr@sam_data$diel_time=='T12P')
+
+ancom_pstr_6A_12P = ancombc2(data = pstr_6A_12P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_6A_12P = ancom_pstr_6A_12P$res
+res_prim_pstr_6A_12P
+df_res_pstr_6A_12P = res_prim_pstr_6A_12P %>% dplyr::filter(diff_diel_timeT6A) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_6A_12P = df_res_pstr_6A_12P %>% 
+    arrange(desc(`lfc_diel_timeT6A`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6A`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_6A_12P$taxon = factor(df_fig_res_pstr_6A_12P$taxon, levels = df_fig_res_pstr_6A_12P$taxon)
+df_fig_res_pstr_6A_12P$direct = factor(df_fig_res_pstr_6A_12P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_6A_12P.df = as.data.frame(df_fig_res_pstr_6A_12P)
+write.table(df_fig_res_pstr_6A_12P.df, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_6A_12P.tsv")
+
+
+fig_res_pstr_6A_12P = df_fig_res_pstr_6A_12P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6A`, fill = `lfc_diel_timeT6A`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6A` - `se_diel_timeT6A`, ymax = `lfc_diel_timeT6A` + `se_diel_timeT6A`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_6A_12P
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_6A_12P.pdf", width = 13, height = 20)
+fig_res_pstr_6A_12P
+dev.off()
+
+#save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_12A_6A.RData")
+#load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_rbd_AHvsTR.RData")
+
+
+
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_12P_6P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T12P' |
+                                             diel_pstr@sam_data$diel_time=='T6P')
+
+ancom_pstr_12P_6P = ancombc2(data = pstr_12P_6P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_12P_6P = ancom_pstr_12P_6P$res
+res_prim_pstr_12P_6P
+df_res_pstr_12P_6P = res_prim_pstr_12P_6P %>% dplyr::filter(diff_diel_timeT6P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_12P_6P = df_res_pstr_12P_6P %>% 
+    arrange(desc(`lfc_diel_timeT6P`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6P`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_12P_6P$taxon = factor(df_fig_res_pstr_12P_6P$taxon, levels = df_fig_res_pstr_12P_6P$taxon)
+df_fig_res_pstr_12P_6P$direct = factor(df_fig_res_pstr_12P_6P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_12P_6P.df = as.data.frame(df_fig_res_pstr_12P_6P)
+write.table(df_fig_res_pstr_12P_6P.df, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_12P_6P.tsv")
+
+
+fig_res_pstr_12P_6P = df_fig_res_pstr_12P_6P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6P`, fill = `lfc_diel_timeT6P`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6P` - `se_diel_timeT6P`, ymax = `lfc_diel_timeT6P` + `se_diel_timeT6P`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_12P_6P
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_12P_6P.pdf", width = 13, height = 20)
+fig_res_pstr_12P_6P
+dev.off()
+
+#save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_12A_6A.RData")
+#load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_rbd_AHvsTR.RData")
+
+
+
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_6P_12A <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T6P' |
+                                             diel_pstr@sam_data$diel_time=='T12A')
+
+ancom_pstr_6P_12A = ancombc2(data = pstr_6P_12A, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_6P_12A = ancom_pstr_6P_12A$res
+res_prim_pstr_6P_12A
+df_res_pstr_6P_12A = res_prim_pstr_6P_12A %>% dplyr::filter(diff_diel_timeT6P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_6P_12A = df_res_pstr_6P_12A %>% 
+    arrange(desc(`lfc_diel_timeT12A`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT12A`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_6P_12A$taxon = factor(df_fig_res_pstr_6P_12A$taxon, levels = df_fig_res_pstr_6P_12A$taxon)
+df_fig_res_pstr_6P_12A$direct = factor(df_fig_res_pstr_6P_12A$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_6P_12A.df = as.data.frame(df_fig_res_pstr_6P_12A)
+write.table(df_fig_res_pstr_6P_12A.df, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_6P_12A.tsv")
+
+
+fig_res_pstr_6P_12A = df_fig_res_pstr_6P_12A %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT12A`, fill = `lfc_diel_timeT12A`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT12A` - `se_diel_timeT12A`, ymax = `lfc_diel_timeT12A` + `se_diel_timeT12A`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_6P_12A
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_6P_12A.pdf", width = 13, height = 20)
+fig_res_pstr_6P_12A
+dev.off()
+
+#save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_12A_6A.RData")
+#load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_rbd_AHvsTR.RData")
+
+```
+
+```{R}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_12A_12P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T12A' |
+                                             diel_pstr@sam_data$diel_time=='T12P')
+
+ancom_pstr_12A_12P = ancombc2(data = pstr_12A_12P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_12A_12P = ancom_pstr_12A_12P$res
+res_prim_pstr_12A_12P
+df_res_pstr_12A_12P = res_prim_pstr_12A_12P %>% dplyr::filter(diff_diel_timeT12P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_12A_12P = df_res_pstr_12A_12P %>% 
+    arrange(desc(`lfc_diel_timeT12P`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT12P`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_12A_12P$taxon = factor(df_fig_res_pstr_12A_12P$taxon, levels = df_fig_res_pstr_12A_12P$taxon)
+df_fig_res_pstr_12A_12P$direct = factor(df_fig_res_pstr_12A_12P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_12A_12P.df = as.data.frame(df_fig_res_pstr_12A_12P)
+write.table(df_fig_res_pstr_12A_12P.df, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_12A_12P.tsv")
+
+
+fig_res_pstr_12A_12P = df_fig_res_pstr_12A_12P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT12P`, fill = `lfc_diel_timeT12P`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT12P` - `se_diel_timeT12P`, ymax = `lfc_diel_timeT12P` + `se_diel_timeT12P`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Eukaryotic Order", y = "Log fold change", 
+         title = "LFC from T12A to T12P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_12A_12P
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_12A_12P.pdf", width = 13, height = 20)
+fig_res_pstr_12A_12P
+dev.off()
+
+#save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_12A_6A.RData")
+#load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_rbd_AHvsTR.RData")
+```
+
+
+
+
+
+```{r}
+#Subset the phyloseq object to contain only the samples and variables you want to explore
+pstr_6A_6P <- subset_samples(diel_pstr,  diel_pstr@sam_data$diel_time=='T6A' |
+                                             diel_pstr@sam_data$diel_time=='T6P')
+
+ancom_pstr_6A_6P = ancombc2(data = pstr_6A_6P, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "diel_time", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "diel_time", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim_pstr_6A_6P = ancom_pstr_6A_6P$res
+res_prim_pstr_6A_6P
+df_res_pstr_6A_6P = res_prim_pstr_6A_6P %>% dplyr::filter(diff_diel_timeT6P) %>%
+    dplyr::select(taxon, contains("diel_time")) #CHANGE ME TO VARIABLE
+
+df_fig_res_pstr_6A_6P = df_res_pstr_6A_6P %>% 
+    arrange(desc(`lfc_diel_timeT6P`
+)) %>%
+    mutate(direct = ifelse(`lfc_diel_timeT6P`
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res_pstr_6A_6P$taxon = factor(df_fig_res_pstr_6A_6P$taxon, levels = df_fig_res_pstr_6A_6P$taxon)
+df_fig_res_pstr_6A_6P$direct = factor(df_fig_res_pstr_6A_6P$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+df_fig_res_pstr_6A_6P.df = as.data.frame(df_fig_res_pstr_6A_6P)
+write.table(df_fig_res_pstr_6A_6P.df, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_6A_6P.tsv")
+
+
+fig_res_pstr_6A_6P = df_fig_res_pstr_6A_6P %>%
+    ggplot(aes(x = taxon, y = `lfc_diel_timeT6P`, fill = `lfc_diel_timeT6P`)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = `lfc_diel_timeT6P` - `se_diel_timeT6P`, ymax = `lfc_diel_timeT6P` + `se_diel_timeT6P`), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Eukaryotic Order", y = "Log fold change", 
+         title = "LFC from T6A to T6P", subtitle = "ANCOM-BC derived signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res_pstr_6A_6P
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/ancom/ancom_pstr_6A_6P.pdf", width = 13, height = 20)
+fig_res_pstr_6A_6P
+dev.off()
+
+#save.image("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_12A_6A.RData")
+#load("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/ancom_pstr_rbd_AHvsTR.RData")
+```
+
+#OANN
+```{r}
+oann_ancom = ancombc2(data = diel_oann, assay_name = "counts", tax_level = "Order",
+                  fix_formula = "day_night", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "day_night", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = TRUE, pairwise = TRUE, dunnet = FALSE, trend = FALSE, #Change this when more than 1 factor or time points
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+res_prim = pstr_ancom$res
+res_prim
+df_res = res_prim %>% dplyr::filter(diff_day_nightNight) %>%
+    dplyr::select(taxon, contains("day_night")) 
+
+df_fig_res = df_res %>% 
+    arrange(desc(lfc_day_nightNight
+)) %>%
+    mutate(direct = ifelse(lfc_day_nightNight
+ > 0, "Positive LFC", "Negative LFC"))
+
+
+df_fig_res$taxon = factor(df_fig_res$taxon, levels = df_fig_res$taxon)
+df_fig_res$direct = factor(df_fig_res$direct, 
+                           levels = c("Positive LFC", "Negative LFC"))
+  
+fig_res = df_fig_res %>%
+    ggplot(aes(x = taxon, y = lfc_day_nightNight, fill = lfc_day_nightNight)) + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", 
+             position = position_dodge(width = 0.4)) +
+    geom_errorbar(aes(ymin = lfc_day_nightNight - se_day_nightNight, ymax = lfc_day_nightNight + se_day_nightNight), 
+                  width = 0.2, position = position_dodge(0.05), color = "black") + 
+    labs(x = "Prokaryotic Order", y = "Log fold change", 
+         title = "LFC in Day vs Night in OANN", subtitle = "Of ANCOM-BC signficant taxa") + scale_fill_viridis_c(option = "plasma") + scale_color_viridis_c(option = "plasma") +
+  theme_bw() + 
+  theme(legend.position = "none",
+        panel.grid.minor.y = element_blank()) + coord_flip()
+
+fig_res
+```
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+##################################################################################
+##################################################################################
+###                          Heatmaps w/ AMPVIS2                               ###
+##################################################################################
+##################################################################################
+
+##################################################################################
+###                                    PSTR                                    ###
+##################################################################################
+
+#PSTR (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr<- amp_load(diel_pstr)
+
+
+
+av2_pstr<- amp_heatmap(ampvis2_pstr, 
+                       order_x_by = dielpstrdayorder, 
+                       group_by = "sample_name", 
+                       #facet_by = "diel_time",
+                       tax_add = c("Class","Family","Genus"), 
+                       tax_aggregate = "OTU", 
+                       plot_values = FALSE,
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/pstr_hm_samplebytimepoint_clean.pdf", width = 14, height = 6)
+av2_pstr
+dev.off()
+```
+
+#PSTR (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr<- amp_load(diel_pstr)
+
+av2_pstr<- amp_heatmap(ampvis2_pstr, 
+                       order_x_by = dielpstrorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class","Family","Genus"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       plot_values = FALSE,
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/pstr_hm_samplebyday.pdf", width = 14, height = 6)
+av2_pstr
+dev.off()
+```
+
+#PSTR (Samples through time, D1-D2-D3) **SYMBIODINIACEAE ONLY**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr<- amp_load(dielsymb_pstr)
+
+av2_pstr<- amp_heatmap(ampvis2_pstr, 
+                       order_x_by = dielpstrdayorder, 
+                       group_by = "sample_name", 
+                       #facet_by = "diel_time",
+                       tax_add = c("Class","Family","Genus"), 
+                       tax_aggregate = "OTU", 
+                       plot_values = FALSE,
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/pstr_symb_hm_samplebytimepoint_clean.pdf", width = 14, height = 5.75)
+av2_pstr
+dev.off()
+```
+
+#PSTR (Samples through time, D1-D2-D3) **SYMBIODINIACEAE ONLY**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr<- amp_load(dielsymb_pstr)
+
+av2_pstr<- amp_heatmap(ampvis2_pstr, 
+                       order_x_by = dielpstrorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       plot_values = FALSE,
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/pstr_symb_hm_samplebyday.pdf", width = 14, height = 6)
+av2_pstr
+dev.off()
+```
+
+
+
+##################################################################################
+###                                    OANN                                    ###
+##################################################################################
+
+#oann (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_oann<- amp_load(diel_oann)
+
+av2_oann<- amp_heatmap(ampvis2_oann, 
+                       order_x_by = dieloanndayorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/oann_hm_samplebytimepoint.pdf", width = 18, height = 13)
+av2_oann
+dev.off()
+```
+
+#oann (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_oann<- amp_load(diel_oann)
+
+av2_oann<- amp_heatmap(ampvis2_oann, 
+                       order_x_by = dieloannorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/oann_hm_samplebyday.pdf", width = 18, height = 13)
+av2_oann
+dev.off()
+```
+
+#oann (Samples through time, D1-D2-D3) **SYMBIODINIACEAE ONLY**
+```{r}
+library(ampvis2)
+
+ampvis2_oann<- amp_load(dielsymb_oann)
+
+av2_oann<- amp_heatmap(ampvis2_oann, 
+                       order_x_by = dieloanndayorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/oann_symb_hm_samplebytimepoint.pdf", width = 18, height = 13)
+av2_oann
+dev.off()
+```
+
+#oann (Samples through time, D1-D2-D3) **SYMBIODINIACEAE ONLY**
+```{r}
+library(ampvis2)
+
+ampvis2_oann<- amp_load(dielsymb_oann)
+
+av2_oann<- amp_heatmap(ampvis2_oann, 
+                       order_x_by = dieloannorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_oann
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/oann_symb_hm_samplebyday.pdf", width = 18, height = 13)
+av2_oann
+dev.off()
+```
+
+##################################################################################
+###                                    DLAB                                    ###
+##################################################################################
+
+#dlab (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_dlab<- amp_load(diel_dlab)
+
+av2_dlab<- amp_heatmap(ampvis2_dlab, 
+                       order_x_by = dieldlabdayorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/dlab_hm_samplebytimepoint.pdf", width = 18, height = 13)
+av2_dlab
+dev.off()
+```
+
+#dlab (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_dlab<- amp_load(diel_dlab)
+
+av2_dlab<- amp_heatmap(ampvis2_dlab, 
+                       order_x_by = dieldlaborder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/dlab_hm_samplebyday.pdf", width = 18, height = 13)
+av2_dlab
+dev.off()
+```
+
+#dlab (Samples through time, D1-D2-D3) **SYMBIODINIACEAE ONLY**
+```{r}
+library(ampvis2)
+
+ampvis2_dlab<- amp_load(dielsymb_dlab)
+
+av2_dlab<- amp_heatmap(ampvis2_dlab, 
+                       order_x_by = dieldlabdayorder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/dlab_symb_hm_samplebytimepoint.pdf", width = 18, height = 13)
+av2_dlab
+dev.off()
+```
+
+#dlab (Samples through time, D1-D2-D3) **SYMBIODINIACEAE ONLY**
+```{r}
+library(ampvis2)
+
+ampvis2_dlab<- amp_load(dielsymb_dlab)
+
+av2_dlab<- amp_heatmap(ampvis2_dlab, 
+                       order_x_by = dieldlaborder, 
+                       group_by = "sample_name", 
+                       tax_add = c("Class", "Order", "Genus", "Species"), 
+                       tax_aggregate = "OTU", 
+                       tax_show = 25, 
+                       color_vector = c("snow", "steelblue")) + 
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+av2_dlab
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/dlab_symb_hm_samplebyday.pdf", width = 18, height = 13)
+av2_dlab
+dev.off()
+```
+
+
+
+##################################################################################
+##################################################################################
+###                          CORE ASVs w/ AMPVIS2                              ###
+##################################################################################
+##################################################################################
+
+#amp_venn: Venn diagram of core OTUs
+
+##################################################################################
+###                                    PSTR                                    ###
+##################################################################################
+
+#PSTR (Samples through time, D1-D2-D3) **W/O SYMBIODINIACEAE**
+```{r}
+library(ampvis2)
+
+ampvis2_pstr<- amp_load(diel_pstr)
+
+avenn_pstr<- amp_venn(ampvis2_pstr, 
+                       group_by = "day_night", 
+                       cut_a = 0.1,
+                       cut_f = 80, 
+                       text_size = 5, 
+                       detailed_output = FALSE,
+                       normalise = TRUE) + 
+                       theme_classic() + 
+                       scale_colour_manual(values=c("midnightblue","goldenrod1"))
+
+avenn_pstr
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/heatmaps/pstr_avenn_samplename.pdf", width = 18, height = 13)
+avenn_pstr
+dev.off()
+```
+
+
+
+##################################################################################
+##################################################################################
+###                                 Rhythmicity                                ###
+##################################################################################
+##################################################################################
+
+##################################################################################
+###                       All Euks except symbiodiniaceae                      ###
+##################################################################################
+#Limma/lmFit requires matrix-like data object containing log ratios or log expression values for a series of arrays
+#Preparing the lmFit data
+```{r}
+library('limorhyde')
+library(data.table)
+
+counts_log_pstr <- log(diel_pstr@otu_table+1)
+as.data.frame(counts_log_pstr)
+
+meta<- read.delim("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/curacao_mapping.txt", sep ="\t")
+
+meta2<- meta %>% 
+  filter(project=="Diel") %>%
+  filter(host=="Pseudodiploria strigosa") %>%
+  dplyr::select(sample_id, diel_code, diel_day, diel_time) %>%
+  mutate(diel_time_num = 
+           case_when(
+             diel_time=="T12A"~0,
+             diel_time=="T6A"~6,
+             diel_time=="T12P"~12,
+             diel_time=="T6P"~18,
+             TRUE~100
+           )
+           )
+
+meta3<- meta2 %>% 
+  mutate(rownames=sample_id) %>%
+  column_to_rownames("rownames")
+
+meta3 <- mutate(meta3,
+                day = as.numeric(str_remove(diel_day, "D")),
+                true_time = diel_time_num + (24*(day-1)))
+
+meta3 = cbind(meta3, limorhyde(meta3$diel_time_num, 'time_'))
+```
+
+#LimoRhyde **USING LOG COUNTS**
+```{r, fig.wdith = 12}
+period = 24
+step = 6
+qvalRhyCutoff = 0.15
+qvalDrCutoff = 0.1
+
+
+rhyLimma = {
+  design = model.matrix(~ time_cos + time_sin, data = meta3)
+  fit = lmFit(counts_log_pstr, design)
+  fit = eBayes(fit, trend = TRUE)
+  rhyNow = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+  setnames(rhyNow, 'rn', 'asv')}
+rhyLimma[1:5, ]
+
+
+rhyLimmaSummary = rhyLimma[, .(P.Value = min(P.Value)), by = asv]
+rhyLimmaSummary[, adj.P.Val := p.adjust(P.Value, method = 'BH')]
+setorderv(rhyLimmaSummary, 'adj.P.Val')
+
+drLimma = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+setnames(drLimma, 'rn', 'asv')
+
+#Designate the rhythmic taxa based on a p-value of 0.05
+rhythmic <- (rhyLimma %>% filter(P.Value <= 0.05))$asv
+#Prune the taxa from your phyloseq
+diel_pstr_rhythmic <- prune_taxa(rhythmic, diel_pstr)
+
+#Export table for supplemental Section 
+#First take the rhylimma products to append to the table
+diel_pstr_rhythmic_rhylimma <- data.frame(rhyLimma) 
+colnames(diel_pstr_rhythmic_rhylimma)[1] <- "ASV"
+diel_pstr_rhythmic_rhylimma <- diel_pstr_rhythmic_rhylimma %>% subset(., select = -adj.P.Val) %>% subset(., ASV %in% rhythmic)
+#create the otu and tax tables
+diel_pstr_rhythmic_otutable <- data.frame(diel_pstr_rhythmic@otu_table)
+diel_pstr_rhythmic_taxtable <- data.frame(diel_pstr_rhythmic@tax_table)
+#swap rownames to columns
+diel_pstr_rhythmic_otutable <- tibble::rownames_to_column(diel_pstr_rhythmic_otutable, "ASV")
+diel_pstr_rhythmic_taxtable <- tibble::rownames_to_column(diel_pstr_rhythmic_taxtable, "ASV")
+#create the merged table
+rhythmic_rhylimmatax <- merge(diel_pstr_rhythmic_rhylimma, diel_pstr_rhythmic_taxtable, by = "ASV")
+rhythmic_otutax <- merge(rhythmic_rhylimmatax, diel_pstr_rhythmic_otutable, by = "ASV")
+write.csv(rhythmic_otutax, file = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/pstr18s_rhythmictaxa.csv")
+
+
+#Set the top 5 most rhythmic
+top5rhythmic <- rhythmic[1:5]
+#prune taxa for only those top 5
+diel_pstr_rhythmic_top5 <- prune_taxa(top5rhythmic, diel_pstr)
+
+#Manipulate the data to add some needed columns for the x axis
+meta3 <- mutate(meta3,
+                day = as.numeric(str_remove(diel_day, "D")),
+                true_time = as.numeric(diel_time_num + (24*(day-1))),
+                diel_time_num = as.numeric(diel_time_num))
+
+#Set up the data frame to analyze
+asv=t(data.frame(diel_pstr_rhythmic@otu_table))
+asv_dat <- cbind(asv,meta3 %>% dplyr::select(diel_time_num, true_time,day))
+
+#or top 5
+asv_top5 <- t(data.frame(diel_pstr_rhythmic_top5@otu_table))
+asv_top5_dat <- cbind(asv_top5,meta3 %>% dplyr::select(diel_time_num, true_time,day))
+
+#Designate the rects we need to visualize the patterns based on true time
+rects <- data.frame(xmin = seq(-3,63,6), xmax = seq(3,69,6), ymin = rep(-Inf, 12), ymax = rep(Inf,12),
+              fill = factor(rep(c("12AM","6AM","12PM","6PM"), 3)),levels = c("12AM","6AM","12PM","6PM"))
+
+```
+
+
+#ASV_3900
+```{r}
+#start plotting the data to visualize the trends
+ASV_3900<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_3900, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) 
+
+#Find the mean values to plot geom_line
+ASV_3900_data <- ggplot_build(ASV_3900)$data
+
+ASV_3900_mean<-data.frame(ASV_3900_data[[2]][["middle"]])
+
+ASV_3900_time<-data.frame(ASV_3900_data[[2]][["x"]])
+
+ASV_3900mean<-cbind(ASV_3900_mean,ASV_3900_time)
+
+colnames(ASV_3900mean) <- c("mean","time")
+
+ASV_3900_title <- "ASV_3900: Apicomplexa; Coccidiomorphea; Corallicolidae; Anthozoaphila_sp."
+
+ASV_3900<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_3900, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = ASV_3900mean, aes(x = time, y = mean), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) +
+    ggtitle("ASV_3900") +
+    ggtitle(label = ASV_3900_title)
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/rhythmic/rythmic_asv3900.pdf", width = 7, height = 5)
+ASV_3900
+dev.off()
+
+```
+
+#ASV_2250
+```{r}
+#start plotting the data to visualize the trends
+ASV_2250<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_2250, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) 
+
+#Find the mean values to plot geom_line
+ASV_2250_data <- ggplot_build(ASV_2250)$data
+
+ASV_2250_mean<-data.frame(ASV_2250_data[[2]][["middle"]])
+
+ASV_2250_time<-data.frame(ASV_2250_data[[2]][["x"]])
+
+ASV_2250mean<-cbind(ASV_2250_mean,ASV_2250_time)
+
+colnames(ASV_2250mean) <- c("mean","time")
+
+ASV_2250_title <- "ASV_2250: Gyrista; Bacillariophyceae; Tabellariaceae;  Asterionella_glacialis"
+
+ASV_2250<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_2250, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = ASV_2250mean, aes(x = time, y = mean), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) +
+    ggtitle("ASV_2250") +
+    ggtitle(label = ASV_2250_title)
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/rhythmic/rythmic_asv2250.pdf", width = 7, height = 5)
+ASV_2250
+dev.off()
+
+```
+
+
+#ASV_1066
+```{r}
+#start plotting the data to visualize the trends
+ASV_1066<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_1066, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) 
+
+#Find the mean values to plot geom_line
+ASV_1066_data <- ggplot_build(ASV_1066)$data
+
+ASV_1066_mean<-data.frame(ASV_1066_data[[2]][["middle"]])
+
+ASV_1066_time<-data.frame(ASV_1066_data[[2]][["x"]])
+
+ASV_1066mean<-cbind(ASV_1066_mean,ASV_1066_time)
+
+colnames(ASV_1066mean) <- c("mean","time")
+
+ASV_1066_title <- "ASV_1066: Gyrista; Bacillariophyceae; Tabellariaceae;  Asterionella_glacialis"
+
+ASV_1066<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_1066, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = ASV_1066mean, aes(x = time, y = mean), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) +
+    ggtitle("ASV_1066") +
+    ggtitle(label = ASV_1066_title)
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/rhythmic/rythmic_asv1066.pdf", width = 7, height = 5)
+ASV_1066
+dev.off()
+
+```
+
+
+#ASV_807
+```{r}
+#start plotting the data to visualize the trends
+ASV_807<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_807, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) 
+
+#Find the mean values to plot geom_line
+ASV_807_data <- ggplot_build(ASV_807)$data
+
+ASV_807_mean<-data.frame(ASV_807_data[[2]][["middle"]])
+
+ASV_807_time<-data.frame(ASV_807_data[[2]][["x"]])
+
+ASV_807mean<-cbind(ASV_807_mean,ASV_807_time)
+
+colnames(ASV_807mean) <- c("mean","time")
+
+ASV_807_title <- "ASV_807: Gyrista; Bacillariophyceae; Tabellariaceae;  Asterionella_glacialis"
+
+ASV_807<-ggplot(asv_top5_dat, aes(x = true_time, y = ASV_807, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = ASV_807mean, aes(x = time, y = mean), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) +
+    ggtitle("ASV_807") +
+    ggtitle(label = ASV_807_title)
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/rhythmic/rythmic_asv807.pdf", width = 7, height = 5)
+ASV_807
+dev.off()
+
+```
+
+
+#ASV_1344
+```{r}
+#start plotting the data to visualize the trends
+ASV_1344<-ggplot(asv_dat, aes(x = true_time, y = ASV_1344, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) 
+
+#Find the mean values to plot geom_line
+ASV_1344_data <- ggplot_build(ASV_1344)$data
+
+ASV_1344_mean<-data.frame(ASV_1344_data[[2]][["middle"]])
+
+ASV_1344_time<-data.frame(ASV_1344_data[[2]][["x"]])
+
+ASV_1344mean<-cbind(ASV_1344_mean,ASV_1344_time)
+
+colnames(ASV_1344mean) <- c("mean","time")
+
+ASV_1344_title <- "ASV_1344: Apicomplexa;	Coccidiomorphea;	Eimeriida;	Corallicolidae;	Corallicolidae_X;	Corallicolidae_XX_sp."
+
+ASV_1344<-ggplot(asv_dat, aes(x = true_time, y = ASV_1344, group = true_time)) +
+    geom_rect(data = rects, mapping = aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = ASV_1344mean, aes(x = time, y = mean), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0,72,6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue","6AM"="slategray","12PM"="gold","6PM"="orange")) +
+    labs(x = "Time (h)", y = "Abundance") +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3,69)) +
+    ggtitle("ASV_1344") +
+    ggtitle(label = ASV_1344_title)
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/rhythmic/rythmic_asv1344.pdf", width = 7, height = 5)
+ASV_1344
+dev.off()
+
+```
+
+
+```{r, fig.width=10, fig.height = 12}
+library(ComplexHeatmap)
+
+meta3 <- meta3 %>% arrange(true_time)
+time_order <- (meta3 %>% dplyr::select(sample_id, true_time) %>% arrange(true_time))$sample_id
+
+mat <- counts_log[rhythmic[l2fc_pass],time_order] %>% t() %>% scale() %>% t() #scaled expression of sig genes for Complex heatmap
+nrow(mat)
+
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              day_night= meta3$day_night,
+                              true_time = meta3$true_time,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                day_night=c("Night"="midnightblue","Day"="gold")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        cluster_columns = FALSE,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        column_names_side = "top",
+        split = 2,
+        column_split = meta3$true_time
+        )
+
+pdf("/Volumes/projects/weiler/rna_seq/analysis/heatmap_daynight_rhythmic.pdf", width = 12, height = 7)
+hm
+dev.off()
+
+
+meta3 <- meta3 %>% arrange(true_time)
+time_order <- (meta3 %>% dplyr::select(sample_id, true_time) %>% arrange(true_time))$sample_id
+
+mat <- tpm[rhythmic[l2fc_pass],time_order] %>% t() %>% scale() %>% t() #scaled expression of sig genes for Complex heatmap
+nrow(mat)
+
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              day_night= meta3$day_night,
+                              true_time = meta3$true_time,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                day_night=c("Night"="midnightblue","Day"="gold")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        cluster_columns = FALSE,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        column_names_side = "top",
+        split = 2,
+        column_split = meta3$true_time
+        )
+
+pdf("/Volumes/projects/weiler/rna_seq/analysis/heatmap_daynight_rhythmic.pdf", width = 12, height = 7)
+hm
+dev.off()
+
+
+
+
+
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              day_night= meta3$day_night,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                day_night=c("Night"="midnightblue","Day"="gold")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        cluster_columns = FALSE,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        column_names_side = "top",
+        split = 2,
+        column_split = meta3$diel_day
+        )
+
+pdf("/Volumes/projects/weiler/rna_seq/analysis/heatmap_daynight_rhythmic_day_clog.pdf", width = 12, height = 7)
+hm
+dev.off()
+```
+
+
+##################################################################################
+###                               Symbiodiniaceae                              ###
+##################################################################################
+#Limma/lmFit requires matrix-like data object containing log ratios or log expression values for a series of arrays
+#Preparing the lmFit data
+```{r}
+library('limorhyde')
+library(data.table)
+counts_log_pstr <- log(dielsymb_pstr@otu_table+1)
+as.data.frame(counts_log_pstr)
+
+meta<- read.delim("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/curacao_mapping.txt", sep ="\t")
+
+meta2<- meta %>% 
+  filter(project=="Diel") %>%
+  filter(host=="Pseudodiploria strigosa") %>%
+  dplyr::select(sample_id, diel_code, diel_day, diel_time) %>%
+  mutate(diel_time_num = 
+           case_when(
+             diel_time=="T12A"~0,
+             diel_time=="T6A"~6,
+             diel_time=="T12P"~12,
+             diel_time=="T6P"~18,
+             TRUE~100
+           )
+           )
+
+meta3<- meta2 %>% 
+  mutate(rownames=sample_id) %>%
+  column_to_rownames("rownames")
+
+meta3 <- mutate(meta3,
+                day = as.numeric(str_remove(diel_day, "D")),
+                true_time = diel_time_num + (24*(day-1)))
+
+meta3 = cbind(meta3, limorhyde(meta3$diel_time_num, 'time_'))
+```
+
+#LimoRhyde **USING LOG COUNTS**
+```{r, fig.wdith = 12}
+period = 24
+step = 6
+qvalRhyCutoff = 0.15
+qvalDrCutoff = 0.1
+
+
+rhyLimma = {
+  design = model.matrix(~ time_cos + time_sin, data = meta3)
+  fit = lmFit(counts_log_pstr, design)
+  fit = eBayes(fit, trend = TRUE)
+  rhyNow = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+  setnames(rhyNow, 'rn', 'asv')}
+rhyLimma[1:5, ]
+
+
+rhyLimmaSummary = rhyLimma[, .(P.Value = min(P.Value)), by = asv]
+rhyLimmaSummary[, adj.P.Val := p.adjust(P.Value, method = 'BH')]
+setorderv(rhyLimmaSummary, 'adj.P.Val')
+
+drLimma = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+setnames(drLimma, 'rn', 'asv')
+
+
+#Designate the rhythmic taxa based on a p-value of 0.05
+rhythmic <- (rhyLimma %>% filter(P.Value <= 0.05))$asv
+#Prune the taxa from your phyloseq
+diel_pstr_rhythmic <- prune_taxa(rhythmic, diel_pstr)
+#Set the top 5 most rhythmic
+top5rhythmic <- rhythmic[1:5]
+#prune taxa for only those top 5
+diel_pstr_rhythmic_top5 <- prune_taxa(top5rhythmic, diel_pstr)
+
+#Manipulate the data to add some needed columns for the x axis
+meta3 <- mutate(meta3,
+                day = as.numeric(str_remove(diel_day, "D")),
+                true_time = as.numeric(diel_time_num + (24*(day-1))),
+                diel_time_num = as.numeric(diel_time_num))
+
+#Set up the data frame to analyze
+asv=t(data.frame(diel_pstr_rhythmic@otu_table))
+asv_dat <- cbind(asv,meta3 %>% dplyr::select(diel_time_num, true_time,day))
+
+#or top 5
+asv_top5 <- t(data.frame(diel_pstr_rhythmic_top5@otu_table))
+asv_top5_dat <- cbind(asv_top5,meta3 %>% dplyr::select(diel_time_num, true_time,day))
+
+#Designate the rects we need to visualize the patterns based on true time
+rects <- data.frame(xmin = seq(-3,63,6), xmax = seq(3,69,6), ymin = rep(-Inf, 12), ymax = rep(Inf,12),
+              fill = factor(rep(c("12AM","6AM","12PM","6PM"), 3)),levels = c("12AM","6AM","12PM","6PM"))
+
+```
+
+
+#LimoRhyde **USING LOG COUNTS** **THIS IS FROM 16S TO MAKE PLOTS**
+```{r, fig.wdith = 12}
+period = 24
+step = 6
+qvalRhyCutoff = 0.15
+qvalDrCutoff = 0.1
+
+
+rhyLimma = {
+  design = model.matrix(~ time_cos + time_sin, data = meta3)
+  fit = lmFit(counts_log_pstr, design)
+  fit = eBayes(fit, trend = TRUE)
+  rhyNow = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+  setnames(rhyNow, 'rn', 'asv')}
+rhyLimma[1:5, ]
+
+
+rhyLimmaSummary = rhyLimma[, .(P.Value = min(P.Value)), by = asv]
+rhyLimmaSummary[, adj.P.Val := p.adjust(P.Value, method = 'BH')]
+setorderv(rhyLimmaSummary, 'adj.P.Val')
+
+drLimma = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+setnames(drLimma, 'rn', 'asv')
+
+#Designate the rhythmic taxa based on a p-value of 0.05
+rhythmic <- (rhyLimma %>% filter(P.Value <= 0.05))$asv
+#Prune the taxa from your phyloseq
+diel_pstr_rhythmic <- prune_taxa(rhythmic, diel_pstr)
+#Set the top 5 most rhythmic
+top5rhythmic <- rhythmic[1:5]
+#prune taxa for only those top 5
+diel_pstr_rhythmic_top5 <- prune_taxa(top5rhythmic, diel_pstr)
+
+#Manipulate the data to add some needed columns for the x axis
+meta3 <- mutate(meta3,
+                day = as.numeric(str_remove(diel_day, "D")),
+                true_time = as.numeric(diel_time_num + (24*(day-1))),
+                diel_time_num = as.numeric(diel_time_num))
+
+#Set up the data frame to analyze
+asv=t(data.frame(diel_pstr_rhythmic@otu_table))
+asv_dat <- cbind(asv,meta3 %>% dplyr::select(diel_time_num, true_time,day))
+
+#or top 5
+asv_top5 <- t(data.frame(diel_pstr_rhythmic_top5@otu_table))
+asv_top5_dat <- cbind(asv_top5,meta3 %>% dplyr::select(diel_time_num, true_time,day))
+
+#Designate the rects we need to visualize the patterns based on true time
+rects <- data.frame(xmin = seq(-3,63,6), xmax = seq(3,69,6), ymin = rep(-Inf, 12), ymax = rep(Inf,12),
+              fill = factor(rep(c("12AM","6AM","12PM","6PM"), 3)),levels = c("12AM","6AM","12PM","6PM"))
+
+```
+
+
+```{r, fig.width=10, fig.height = 12}
+library(ComplexHeatmap)
+
+meta3 <- meta3 %>% arrange(true_time)
+time_order <- (meta3 %>% dplyr::select(sample_id, true_time) %>% arrange(true_time))$sample_id
+
+mat <- counts_log[rhythmic[l2fc_pass],time_order] %>% t() %>% scale() %>% t() #scaled expression of sig genes for Complex heatmap
+nrow(mat)
+
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              day_night= meta3$day_night,
+                              true_time = meta3$true_time,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                day_night=c("Night"="midnightblue","Day"="gold")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        cluster_columns = FALSE,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        column_names_side = "top",
+        split = 2,
+        column_split = meta3$true_time
+        )
+
+pdf("/Volumes/projects/weiler/rna_seq/analysis/heatmap_daynight_rhythmic.pdf", width = 12, height = 7)
+hm
+dev.off()
+
+
+meta3 <- meta3 %>% arrange(true_time)
+time_order <- (meta3 %>% dplyr::select(sample_id, true_time) %>% arrange(true_time))$sample_id
+
+mat <- tpm[rhythmic[l2fc_pass],time_order] %>% t() %>% scale() %>% t() #scaled expression of sig genes for Complex heatmap
+nrow(mat)
+
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              day_night= meta3$day_night,
+                              true_time = meta3$true_time,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                day_night=c("Night"="midnightblue","Day"="gold")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        cluster_columns = FALSE,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        column_names_side = "top",
+        split = 2,
+        column_split = meta3$true_time
+        )
+
+pdf("/Volumes/projects/weiler/rna_seq/analysis/heatmap_daynight_rhythmic.pdf", width = 12, height = 7)
+hm
+dev.off()
+
+
+
+
+
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              day_night= meta3$day_night,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                day_night=c("Night"="midnightblue","Day"="gold")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        cluster_columns = FALSE,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        column_names_side = "top",
+        split = 2,
+        column_split = meta3$diel_day
+        )
+
+pdf("/Volumes/projects/weiler/rna_seq/analysis/heatmap_daynight_rhythmic_day_clog.pdf", width = 12, height = 7)
+hm
+dev.off()
+```
+
+
+
+##################################################################################
+##################################################################################
+###                               Core Microbiome                              ###
+##################################################################################
+##################################################################################
+
+```{r}
+library(microbiome)
+#Need Heuristic to define core microbiome
+#prevalence is number of samples it is found in
+#detection is percentage of reads per sample
+diel_pstr_core <- core_members(diel_pstr, detection = 0.0001, prevalence = 50/100)
+diel_pstr_core
+
+core.taxa <- c("ASV_20", "ASV_41", "ASV_62", "ASV_213", "ASV_259", "ASV_268", "ASV_280", "ASV_288", "ASV_309", "ASV_331", "ASV_334", "ASV_339", "ASV_346", "ASV_360", "ASV_371", "ASV_372", "ASV_389", "ASV_396", "ASV_399", "ASV_402", "ASV_404", "ASV_428", "ASV_430", "ASV_449", "ASV_450", "ASV_451", "ASV_453", "ASV_459", "ASV_489", "ASV_495", "ASV_498", "ASV_502", "ASV_503", "ASV_506", "ASV_509", "ASV_531", "ASV_537", "ASV_540", "ASV_543", "ASV_548", "ASV_554", "ASV_559", "ASV_561", "ASV_570", "ASV_583", "ASV_592", "ASV_595", "ASV_604", "ASV_608", "ASV_611", "ASV_613", "ASV_620", "ASV_647", "ASV_654", "ASV_663", "ASV_669", "ASV_676", "ASV_682", "ASV_683", "ASV_690", "ASV_703", "ASV_709", "ASV_716", "ASV_719", "ASV_726", "ASV_755", "ASV_759", "ASV_760", "ASV_764", "ASV_772", "ASV_775", "ASV_777", "ASV_787", "ASV_793", "ASV_808", "ASV_814", "ASV_829", "ASV_837", "ASV_840", "ASV_867", "ASV_871", "ASV_890", "ASV_893", "ASV_911", "ASV_912", "ASV_915", "ASV_929", "ASV_933", "ASV_938", "ASV_944", "ASV_949", "ASV_963", "ASV_965", "ASV_967", "ASV_980", "ASV_981", "ASV_988", "ASV_1005", "ASV_1008", "ASV_1013", "ASV_1015", "ASV_1022", "ASV_1031", "ASV_1032", "ASV_1036", "ASV_1052", "ASV_1053", "ASV_1071", "ASV_1086", "ASV_1102", "ASV_1128", "ASV_1135", "ASV_1142", "ASV_1150", "ASV_1154", "ASV_1166", "ASV_1168", "ASV_1184", "ASV_1211", "ASV_1220", "ASV_1241", "ASV_1245", "ASV_1253", "ASV_1265", "ASV_1266", "ASV_1278", "ASV_1284", "ASV_1285", "ASV_1291", "ASV_1312", "ASV_1315", "ASV_1316", "ASV_1317", "ASV_1324", "ASV_1329", "ASV_1336", "ASV_1338", "ASV_1339", "ASV_1344", "ASV_1349", "ASV_1350", "ASV_1351", "ASV_1355", "ASV_1370", "ASV_1381", "ASV_1396", "ASV_1427", "ASV_1429", "ASV_1453", "ASV_1463", "ASV_1464", "ASV_1475", "ASV_1488", "ASV_1489", "ASV_1531", "ASV_1547", "ASV_1558", "ASV_1570", "ASV_1586", "ASV_1605", "ASV_1618", "ASV_1714", "ASV_1761", "ASV_1808", "ASV_1820", "ASV_1841", "ASV_1867", "ASV_1908", "ASV_1938", "ASV_1981", "ASV_1996", "ASV_2018", "ASV_2071", "ASV_2123", "ASV_2145", "ASV_2182", "ASV_2231", "ASV_2305", "ASV_2425", "ASV_2447", "ASV_2893", "ASV_2992", "ASV_3175")
+
+
+#designate all taxa
+diel_pstr_taxa <- taxa_names(diel_pstr)
+
+#remove all but the core taxa
+diel_pstr_core_taxa <- diel_pstr_taxa[(diel_pstr_taxa %in% core.taxa)]
+
+#new phyloseq containing only core taxa
+diel_pstr_core_members <- prune_taxa(diel_pstr_core_taxa, diel_pstr)
+
+#check the taxonomy
+View(diel_pstr_core_members@tax_table)
+
+#save the core taxa to an excel file
+write.csv(diel_pstr_core_members@tax_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_coremicrobiome_taxtable.csv")
+```
+
+#75%
+```{r}
+library(microbiome)
+#Need Heuristic to define core microbiome
+#prevalence is number of samples it is found in
+#detection is percentage of reads per sample
+diel_pstr_core75 <- core_members(diel_pstr, detection = 0.0001, prevalence = 0.75)
+diel_pstr_core75
+
+core.taxa <- c("ASV_20", "ASV_41", "ASV_62", "ASV_213", "ASV_259", "ASV_268", "ASV_280", "ASV_288", "ASV_309", "ASV_331", "ASV_334", "ASV_339", "ASV_346", "ASV_360", "ASV_371", "ASV_372", "ASV_389", "ASV_396", "ASV_399", "ASV_402", "ASV_404", "ASV_428", "ASV_430", "ASV_449", "ASV_450", "ASV_451", "ASV_453", "ASV_459", "ASV_489", "ASV_495", "ASV_498", "ASV_502", "ASV_503", "ASV_506", "ASV_509", "ASV_531", "ASV_537", "ASV_540", "ASV_543", "ASV_548", "ASV_554", "ASV_559", "ASV_561", "ASV_570", "ASV_583", "ASV_592", "ASV_595", "ASV_604", "ASV_608", "ASV_611", "ASV_613", "ASV_620", "ASV_647", "ASV_654", "ASV_663", "ASV_669", "ASV_676", "ASV_682", "ASV_683", "ASV_690", "ASV_703", "ASV_709", "ASV_716", "ASV_719", "ASV_726", "ASV_755", "ASV_759", "ASV_760", "ASV_764", "ASV_772", "ASV_775", "ASV_777", "ASV_787", "ASV_793", "ASV_808", "ASV_814", "ASV_829", "ASV_837", "ASV_840", "ASV_867", "ASV_871", "ASV_890", "ASV_893", "ASV_911", "ASV_912", "ASV_915", "ASV_929", "ASV_933", "ASV_938", "ASV_944", "ASV_949", "ASV_963", "ASV_965", "ASV_967", "ASV_980", "ASV_981", "ASV_988", "ASV_1005", "ASV_1008", "ASV_1013", "ASV_1015", "ASV_1022", "ASV_1031", "ASV_1032", "ASV_1036", "ASV_1052", "ASV_1053", "ASV_1071", "ASV_1086", "ASV_1102", "ASV_1128", "ASV_1135", "ASV_1142", "ASV_1150", "ASV_1154", "ASV_1166", "ASV_1168", "ASV_1184", "ASV_1211", "ASV_1220", "ASV_1241", "ASV_1245", "ASV_1253", "ASV_1265", "ASV_1266", "ASV_1278", "ASV_1284", "ASV_1285", "ASV_1291", "ASV_1312", "ASV_1315", "ASV_1316", "ASV_1317", "ASV_1324", "ASV_1329", "ASV_1336", "ASV_1338", "ASV_1339", "ASV_1344", "ASV_1349", "ASV_1350", "ASV_1351", "ASV_1355", "ASV_1370", "ASV_1381", "ASV_1396", "ASV_1427", "ASV_1429", "ASV_1453", "ASV_1463", "ASV_1464", "ASV_1475", "ASV_1488", "ASV_1489", "ASV_1531", "ASV_1547", "ASV_1558", "ASV_1570", "ASV_1586", "ASV_1605", "ASV_1618", "ASV_1714", "ASV_1761", "ASV_1808", "ASV_1820", "ASV_1841", "ASV_1867", "ASV_1908", "ASV_1938", "ASV_1981", "ASV_1996", "ASV_2018", "ASV_2071", "ASV_2123", "ASV_2145", "ASV_2182", "ASV_2231", "ASV_2305", "ASV_2425", "ASV_2447", "ASV_2893", "ASV_2992", "ASV_3175")
+
+
+#designate all taxa
+diel_pstr_taxa <- taxa_names(diel_pstr)
+
+#remove all but the core taxa
+diel_pstr_core_taxa <- diel_pstr_taxa[(diel_pstr_taxa %in% core.taxa)]
+
+#new phyloseq containing only core taxa
+diel_pstr_core_members <- prune_taxa(diel_pstr_core_taxa, diel_pstr)
+
+#check the taxonomy
+View(diel_pstr_core_members@tax_table)
+
+#save the core taxa to an excel file
+write.csv(diel_pstr_core_members@tax_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_coremicrobiome_taxtable.csv")
+```
+
+
+##################################################################################
+###                       Shared Core w/ Venn Example                          ###
+##################################################################################
+#From Shetty and Lahti et al. https://microbiome.github.io/tutorials/core_venn.html
+
+```{r}
+#install.packages("eulerr") # If not installed
+library(eulerr)
+library(microbiome)
+#devtools::install_github('microsud/microbiomeutilities')
+library(microbiomeutilities)
+```
+
+#We will aim to identify shared core taxa between nationalities.
+```{r}
+# simple way to count number of samples in each group
+table(meta(diel_pstr)$diel_time, useNA = "always")
+```
+
+# convert to relative abundances
+```{r}
+diel_pstr.rel <- microbiome::transform(diel_pstr, "compositional")
+```
+
+#Make a list from variable
+```{r}
+time_points <- unique(as.character(meta(diel_pstr.rel)$diel_time))
+print(time_points)
+```
+
+#Write a for loop to go through each of the time points one by one and combine identified core taxa into a list.
+```{r}
+list_core <- c() # an empty object to store information
+
+for (n in time_points){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    
+    diel_pstr.sub <- subset_samples(diel_pstr.rel, time_points == n) # Choose sample from diel time by n
+    
+    diel_pstr_core_m <- core_members(diel_pstr.sub, # ps.sub is phyloseq selected with only samples from g 
+                           detection = 0.001, # 0.001 in atleast 90% samples 
+                           prevalence = 0.75)
+    print(paste0("No. of core taxa in ", n, " : ", length(diel_pstr_core_m))) # print core taxa identified in each DiseaseState.
+    list_core[[n]] <- diel_pstr_core_m # add to a list core taxa for each group.
+    #print(list_core)
+}
+```
+
+```{r}
+print(list_core)
+```
+
+
+```{r}
+# Specify colors and plot venn
+# supplying colors in the order they appear in list_core
+mycols <- c(T12A="mediumpurple", T6A="#d6e2e9", T12P="#fcf5c7", T6P="lightgoldenrod") 
+plot(venn(list_core),
+     fills = mycols)
+```
+
+#Here, we see that the ids are only names without taxonomic information. This is because the rownames of otu_table and tax_table are usually IDs or sequences.
+#The format_to_besthit() function in microbiomeutilites can be useful which add best taxonomic information that is available as demonstrated below.
+```{r}
+print(list_core)
+
+# use the pseq.rel object created at the begening of this tutorial. 
+taxa_names(diel_pstr.rel)[1:5]
+```
+
+#DOES NOT WORK BECAUSE 18S!!
+```{r}
+# format names
+diel_pstr.rel.f <- format_to_besthit(diel_pstr.rel)
+# check names
+taxa_names(diel_pstr.rel.f)[1:5]
+
+```
+
+
+#Note: There are limitations to the number of groups that can be plotted with the eulerr::venn(). Check eulerr documentation for more detailed information.
+
+
+##################################################################################
+###                               Core Venn Diagram                            ###
+##################################################################################
+
+```{r}
+#install.packages("ggvenn")
+library(ggvenn)
+
+#diel_pstr_core_otu <- diel_pstr_core_members@otu_table %>% group_by(diel_pstr_core_members@sam_data$diel_time) %>% as.data.frame()
+
+listcore <- list_core
+listcore <- listcore[c("T12A","T6A", "T12P","T6P")]
+
+venn_diel_pstr <- ggvenn(listcore,
+                         columns = NULL,
+                         show_elements = FALSE,
+                         show_percentage = FALSE,
+                         digits = 1,
+                         fill_color = c("midnightblue","slategray","gold", "orange"),
+                         fill_alpha = 0.5,
+                         stroke_color = "black",
+                         stroke_alpha = 1,
+                         stroke_size = 1,
+                         stroke_linetype = "solid",
+                         set_name_color = "black",
+                         set_name_size = 6,
+                         text_color = "black",
+                         text_size = 4,
+                         label_sep = ",",
+                         count_column = NULL,
+                         show_outside = c("auto"),
+                         auto_scale = FALSE
+                          )
+              
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/coreupset/pstr_alltaxa_venn_core75_lefttoright.pdf", width = 9, height = 7)
+venn_diel_pstr
+dev.off()
+```
+
+#produce unqiue values to excel
+```{r}
+library(dplyr)
+T12A_unique <- list_core$T12A
+T6A_unique <- list_core$T6A
+T12P_unique <- list_core$T12P
+T6P_unique <- list_core$T6P
+
+write.csv(T12A_unique, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_core_asvs_T12A.csv")
+write.csv(T6A_unique, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_core_asvs_T6A.csv")
+write.csv(T12P_unique, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_core_asvs_T12P.csv")
+write.csv(T6P_unique, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_diel/18s_core_asvs_T6P.csv")
+```
+
+
+
+##################################################################################
+###                               Core Upset Plot                              ###
+##################################################################################
+
+```{r}
+#install.packages("UpSetR")
+library(UpSetR)
+library(MicrobiotaProcess)
+
+#get data to observe upset - using whole data
+upsetda <- get_upset(diel_pstr, factorNames="diel_time")
+
+otuda <- t(diel_pstr@otu_table) %>% as.data.frame
+
+sampleda <- map["diel_time"]
+
+head(sampleda)
+
+upsetda2 <- get_upset(obj=otuda, sampleda=sampleda, 
+                     factorNames="diel_time")
+
+#Do Not Touch
+pstr_upsetr <- UpSetR::upset(upsetda, 
+                     sets=c("T6P","T12P","T6A","T12A"), 
+                     sets.bar.color = c("orange","gold","slategray","midnightblue"),
+                     order.by = "freq", 
+                     empty.intersections = "on", 
+                     keep.order = TRUE,
+                     mainbar.y.label = "ASV Intersection Size"
+                     )
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/coreupset/pstr_upset_dielpstr_freq.pdf", width = 9, height = 5)
+pstr_upsetr
+dev.off()
+
+
+#make upset from list of core members
+library(UpSetR)
+
+pstr_upsetr_core <- UpSetR::upset(fromList(listcore[c("T6P","T12P","T6A","T12A")]), 
+                     sets=c("T6P","T12P","T6A","T12A"), 
+                     sets.bar.color = c("orange","gold","slategray","midnightblue"),
+                     order.by = "freq", 
+                     empty.intersections = "on", 
+                     keep.order = TRUE,
+                     mainbar.y.label = "ASV Intersection Size"
+                     )
+
+pdf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/18s_diel/coreupset/pstr_nosymb_upsetcore_clean.pdf", width = 9, height = 5)
+pstr_upsetr_core
+dev.off()
+```
+
+#Overcomplicate the aesthetics **incomplete**
+```{r}
+library(ComplexUpset)
+
+pstr_upsetr <- upset(listcore, fromList(listcore[c("T12A","T6A","T12P","T6P")]), 
+                     sets=c("T12A","T6A","T12P","T6P"), 
+                     #sets.bar.color = c("orange","midnightblue","gold","slategray"),
+                     order.by = "degree", 
+                     #empty.intersections = "on", 
+                     keep.order = TRUE,
+                     mainbar.y.label = "ASV Intersection Size",
+                     stripes=c("orange","midnightblue","gold","slategray")
+                     )
+
+pstr_upsetr <- upset(a,colnames(a),
+                     intersections=list(c("one"),c("one","two"),c("one","two","three","four"),c("one","three","four"),c("one","two","three"),c("three"),c("two"),c("four"),c("three","four"),c("two","four")),
+                     sort_intersections=FALSE)
+```
+
+
+
+
+
+
+
+
+
+##################################################################################
+##################################################################################
+###                                Co-Occurence                                ###
+##################################################################################
+##################################################################################
+
+#Need PS objects to combine for Networks
+```{r}
+#ALL TAXA
+write.csv(diel_pstr_all@otu_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/16S_18S_Network/18s_all_otus.csv")
+write.csv(diel_pstr_all@tax_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/16S_18S_Network/18s_all_tax.csv")
+
+#No Symbiodiniaceae
+write.csv(diel_pstr@otu_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/16S_18S_Network/18s_nosymb_otus.csv")
+write.csv(diel_pstr@tax_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/16S_18S_Network/18s_nosymb_tax.csv")
+
+#ONLY Symbiodiniaceae
+write.csv(diel_pstr@otu_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/16S_18S_Network/18s_symb_otus.csv")
+write.csv(dielsymb_pstr@tax_table, "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/16S_18S_Network/18s_symb_tax.csv")
+
+
+```
+
+
+##################################################################################
+###                                    Euks                                    ###
+##################################################################################
+
+#Chord plots *ALL EUKS*
+```{r}
+library(microeco)
+library(htmlwidgets)
+library(circlize)
+library(chorddiag)
+library(webshot)
+
+meco_diel_pstr <- phyloseq2meco(diel_pstr_all)
+meco_diel_pstr
+
+t1 <- trans_network$new(dataset = meco_diel_pstr, cal_cor = "SparCC", taxa_level = "OTU", filter_thres = 0.001, SparCC_simu_num = 100)
+
+t1$cal_network(network_method="SpiecEasi")
+
+#tnetwork <- t1$cal_network
+
+#got to here and switched to proks/euks
+
+#t1$save_network(filepath = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_Network/18s_network_genus.gexf")
+# Open in Gephi and save as gexf again, then continue below
+#gexf1 <- read.gexf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_Network/18s_network_genus.gexf")
+#igraph1 <- gexf.to.igraph(gexf1)
+
+
+t1$cal_sum_links(taxa_level = "Genus")
+t1$plot_sum_links(plot_pos = TRUE, plot_num = 10) # Plot_pos is true, so positive linkages ar eplotted. 
+
+p <- t1$plot_sum_links(plot_pos = TRUE, plot_num = 10)
+p$x$option
+chord <- chorddiag(p$x$matrix, groupColors=safe_colorblind_palette, groupnameFontsize=8, margin=120, showTicks=FALSE)
+
+#p + canvas.xlim
+#chorddiag(p$x$matrix, groupColors=palette, groupnameFontsize=10)
+
+saveWidget(chord, file="/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/diel/network analyses/18s_all_diel_pstr_holobiont_chord.html")
+
+webshot("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/diel/network analyses/18s_all_diel_pstr_holobiont_chord.html" , "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/diel/network analyses/18s_all_diel_pstr_holobiont_chord.pdf", delay = 0.2)
+
+
+```
+
+#Chord plots *EUKS NO SYMB*
+```{r}
+library(microeco)
+library(htmlwidgets)
+library(circlize)
+library(chorddiag)
+library(webshot)
+
+meco_diel_pstr <- phyloseq2meco(diel_pstr)
+meco_diel_pstr
+
+t1 <- trans_network$new(dataset = meco_diel_pstr, cal_cor = "SparCC", taxa_level = "OTU", filter_thres = 0, SparCC_simu_num = 100)
+
+t1$cal_network(network_method="SpiecEasi")
+
+#tnetwork <- t1$cal_network
+
+#got to here and switched to proks/euks
+
+#t1$save_network(filepath = "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_Network/18s_network_genus.gexf")
+# Open in Gephi and save as gexf again, then continue below
+#gexf1 <- read.gexf("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/data/18s_Network/18s_network_genus.gexf")
+#igraph1 <- gexf.to.igraph(gexf1)
+
+
+t1$cal_sum_links(taxa_level = "Genus")
+t1$plot_sum_links(plot_pos = TRUE, plot_num = 10) # Plot_pos is true, so positive linkages ar eplotted. 
+
+p <- t1$plot_sum_links(plot_pos = TRUE, plot_num = 10)
+p$x$option
+chord <- chorddiag(p$x$matrix, groupColors=safe_colorblind_palette, groupnameFontsize=8, margin=120, showTicks=FALSE)
+
+#p + canvas.xlim
+#chorddiag(p$x$matrix, groupColors=palette, groupnameFontsize=10)
+
+saveWidget(chord, file="/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/diel/network analyses/18s_nosymb_diel_pstr_holobiont_chord.html")
+
+webshot("/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/diel/network analyses/18s_nosymb_diel_pstr_holobiont_chord.html" , "/Users/bradweiler/Google Drive/My Drive/curacao/metabarcoding/analysis/diel/network analyses/18s_nosymb_diel_pstr_holobiont_chord.pdf", delay = 0.2)
+
+
+```
+
+```{r}
+net_single <- netConstruct(ps_filtered,
+                           dataType = "counts",
+                           filtTax = "highestFreq",
+                           filtTaxPar = list(highestFreq = 100),
+                           measure = "spieceasi",
+                           normMethod = "clr", 
+                           zeroMethod = "none",
+                           sparsMethod = "none",
+                           verbose = 3,
+                           seed = 123456)
+```
+
+```{r}
+props_single <- netAnalyze(net_single, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE)
+```
+
+
+```{r}
+pdf("PATH", width = 20, height = 20)
+p <- plot(props_single, 
+          layout=layout_in_circle,
+          nodeColor = "cluster", 
+          nodeSize = "eigenvector",
+          title1 = "Network on ASV level with SPIEC-EASI associations", 
+          showTitle = TRUE,
+          cexTitle = 2.3)
+
+legend(0.7, 1.1, cex = 2.2, title = "estimated association:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#009900","red"), 
+       bty = "n", horiz = TRUE)
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
