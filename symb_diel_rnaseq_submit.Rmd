@@ -1,0 +1,2736 @@
+---
+title: "pstr_disease_symb"
+author: "Brad Weiler"
+date: "2025-04-15"
+output: html_document
+---
+
+#Build the reference index for STAR
+```{bash}
+#!/usr/bin/env bash
+
+# USAGE: ./star_index.sh speclist.txt
+# This script generates STAR index jobs for each species listed.
+
+WORKDIR=/scratch/projects/coralma/data/diel
+LOGDIR=${WORKDIR}/logs
+THREADS=8
+
+if [[ ! -f $1 ]]; then
+  echo "SPECLIST does not exist, exiting :("; exit 1
+fi
+
+SPECLIST=$(cat "$1")
+
+for SYMB in ${SPECLIST}; do
+
+  GENOME_INDEX="${WORKDIR}/reference/${SYMB}_star_index"
+  mkdir -p "${GENOME_INDEX}"
+  mkdir -p ${WORKDIR}/${SYMB}/scripts
+  mkdir -p ${LOGDIR}/${SYMB}
+
+  echo "
+#!/bin/bash
+#BSUB -J ${SYMB}_index
+#BSUB -e ${LOGDIR}/${SYMB}/${SYMB}_index.err
+#BSUB -o ${LOGDIR}/${SYMB}/${SYMB}_index.out
+#BSUB -q bigmem
+#BSUB -P coralma
+#BSUB -n 8
+#BSUB -B
+#BSUB -W 120:00
+#BSUB -N
+
+echo \$(date -u)
+
+STAR --runThreadN 8 \
+  --runMode genomeGenerate \
+  --genomeDir ${WORKDIR}/reference/${SYMB}_STAR_index \
+  --genomeFastaFiles ${WORKDIR}/reference/symbs/${SYMB}_genome_scaffold.fa \
+  --sjdbGTFfile ${WORKDIR}/reference/symbs/${SYMB}_annotation.gff \
+  --sjdbOverhang 100
+
+echo "Index created for ${SYMB}"
+  " > ${WORKDIR}/${SYMB}/scripts/${SYMB}_index.job
+
+  if [[ ! -f ${GENOME_INDEX}/SAindex ]]; then
+    echo "Submitting STAR index job for ${SYMB}"
+    bsub < "${WORKDIR}/${SYMB}/scripts/${SYMB}_index.job"
+  else
+    echo "STAR index already exists for ${SYMB}, skipping."
+  fi
+
+done
+```
+
+
+#Take the bbsplit files and align the symbionts to their reads
+```{bash}
+#!/usr/bin/env bash
+
+# USAGE: ./split2star.sh speclist.txt
+# This script generates STAR alignment jobs assuming indices already exist.
+
+WORKDIR=/scratch/projects/coralma/data/diel
+LOGDIR=${WORKDIR}/logs
+THREADS=8
+SAMPLES=${WORKDIR}/reference/samples.txt
+
+if [[ ! -f $1 ]]; then
+  echo "SPECLIST does not exist, exiting :("; exit 1
+fi
+
+if [[ ! -f $SAMPLES ]]; then
+  echo "samples.txt not found at $SAMPLES, exiting."; exit 1
+fi
+
+SPECLIST=$(cat "$1")
+
+for SYMB in ${SPECLIST}; do
+  GENOME_INDEX="${WORKDIR}/reference/${SYMB}_star_index"
+  mkdir -p ${WORKDIR}/${SYMB}/scripts
+  mkdir -p ${LOGDIR}/${SYMB}
+
+  for SAMP in $(cat "$SAMPLES"); do
+    echo "Preparing STAR alignment job for sample: $SAMP"
+
+    echo "
+#!/bin/bash
+#BSUB -J ${SAMP}_align
+#BSUB -e ${LOGDIR}/${SYMB}/${SAMP}_${SYMB}_align.err
+#BSUB -o ${LOGDIR}/${SYMB}/${SAMP}_${SYMB}_align.out
+#BSUB -q bigmem
+#BSUB -P coralma
+#BSUB -n 8
+#BSUB -B
+#BSUB -W 120:00
+#BSUB -N
+
+echo \$(date -u)
+
+mkdir -p ${WORKDIR}/${SYMB}/star_alignments/${SAMP}
+
+STAR \
+  --runThreadN ${THREADS} \
+  --genomeDir ${GENOME_INDEX} \
+  --readFilesIn ${WORKDIR}/pstr/bbsplit/symbs/${SAMP}_${SYMB}_genome_scaffold_1.fq.gz \
+                 ${WORKDIR}/pstr/bbsplit/symbs/${SAMP}_${SYMB}_genome_scaffold_2.fq.gz \
+  --readFilesCommand zcat \
+  --outFileNamePrefix ${WORKDIR}/${SYMB}/star_alignments/${SAMP}/${SAMP}_ \
+  --outSAMtype BAM SortedByCoordinate \
+  --quantMode GeneCounts
+
+echo "STAR alignment completed for ${SAMP}"
+    " > ${WORKDIR}/${SYMB}/scripts/${SYMB}_${SAMP}_align.job
+
+    if [[ ! -f ${WORKDIR}/${SYMB}/star_alignments/${SAMP}/${SAMP}_ReadsPerGene.out.tab ]]; then
+      echo "Submitting STAR alignment job for ${SAMP}"
+      bsub < ${WORKDIR}/${SYMB}/scripts/${SYMB}_${SAMP}_align.job
+    else
+      echo "STAR output already exists for ${SAMP}, skipping."
+    fi
+  done
+done
+
+```
+
+#star2count.sh
+#copy each alignment to a common directory
+```{bash}
+#!/usr/bin/env bash
+
+# Set working directory
+WORKDIR="/scratch/projects/coralma/data/diel"
+
+# Read species list
+for SPEC in $(cat speclist.txt); do
+  echo "Processing species: $SPEC"
+
+  STAR_ALIGN_DIR="${WORKDIR}/${SPEC}/star_alignments"
+  COUNTS_DIR="${WORKDIR}/${SPEC}/${SPEC}_star_counts"
+  SAMPLES_FILE="${WORKDIR}/reference/samples.txt"
+
+  # Create destination directory
+  mkdir -p "${COUNTS_DIR}"
+
+  # Read sample list
+  for SAMP in $(cat "${SAMPLES_FILE}"); do
+    echo "  Copying ${SAMP}_ReadsPerGene.out.tab for sample $SAMP"
+
+    SRC="${STAR_ALIGN_DIR}/${SAMP}/${SAMP}_ReadsPerGene.out.tab"
+    DEST="${COUNTS_DIR}/${SAMP}_ReadsPerGene.out.tab"
+
+    if [[ -f "$SRC" ]]; then
+      cp "$SRC" "$DEST"
+    else
+      echo "  WARNING: File not found for sample $SAMP at $SRC"
+    fi
+  done
+
+  echo "Done copying for $SPEC."
+done
+
+```
+
+#EGGNOG mapper for R
+#Creating protein fastas for eggnog in bash using genome GFF
+```{bash}
+
+#Symbiodinium
+gffread symbiodinium_annotation.gff.gz \
+   -g symbiodinium_genome_scaffold.fa \
+   -y symbiodinium_proteins.faa \
+   -S
+
+command="emapper.py -i symbiodinium_proteins.faa -m diamond --data_dir . -o symbiodinium --cpu 8"
+bsub -P coralma -q bigmem -n 8 -W 120:00 -J symb_eggnog -e symb_eggnog.err -o symb_eggnog.out eval ${command}
+
+#Breviolum
+gffread breviolum_annotation.gtf \
+   -g breviolum_genome_scaffold.fa \
+   -y breviolum_proteins.faa \
+   -S
+
+command="emapper.py -i breviolum_proteins.faa -m diamond --data_dir . -o breviolum --cpu 8"
+bsub -P coralma -q bigmem -n 8 -W 120:00 -J brev_eggnog -e brev_eggnog.err -o brev_eggnog.out eval ${command}
+
+
+#Cladocopium
+gffread cladocopium_annotation.gff.gz \
+   -g cladocopium_genome_scaffold.fa \
+   -y cladocopium_proteins.faa \
+   -S
+
+command="emapper.py -i cladocopium_proteins.faa -m diamond --data_dir . -o cladocopium --cpu 8"
+bsub -P coralma -q bigmem -n 8 -W 120:00 -J clado_eggnog -e clado_eggnog.err -o clado_eggnog.out eval ${command}
+
+#Durusdinium
+gffread durusdinium_annotation.gff.gz \
+   -g durusdinium_genome_scaffold.fa \
+   -y durusdinium_proteins.faa \
+   -S
+   
+command="emapper.py -i durusdinium_proteins.faa -m diamond --data_dir . -o durusdinium --cpu 8"
+bsub -P coralma -q bigmem -n 8 -W 120:00 -J durus_eggnog -e durus_eggnog.err -o durus_eggnog.out eval ${command}
+
+```
+
+
+##################################################################################
+##################################################################################
+######                             R Analyses                               ######
+##################################################################################
+##################################################################################
+
+##################################################################################
+##                                  Libraries                                   ##
+##################################################################################
+
+#Load Required Packages
+```{r}
+# Data Import & Preprocessing
+library(tximport)        # Import transcript abundance from Salmon/Kallisto
+library(data.table)      # Fast and memory-efficient data manipulation
+library(qs)              # Quick serialization/deserialization of R objects
+library(foreach)         # Parallel loops for distributed computation
+
+# Differential Expression & Transcriptomics
+library(DESeq2)          # Differential expression analysis for RNA-seq
+library(limma)           # Linear models for microarray/RNA-seq data
+library(limorhyde)       # Time-series rhythmicity modeling in transcriptomics
+library(WGCNA)           # Gene co-expression network analysis and module detection
+library(PCAtools)        # Exploratory PCA plots and diagnostics for expression data
+
+# Visualization & Plotting - Core
+library(ggplot2)         # Grammar of graphics framework
+library(patchwork)       # Combine multiple ggplots into a single figure
+library(ComplexHeatmap)  # Highly customizable complex heatmaps
+
+# Visualization & Plotting - Extensions
+library(ggalluvial)      # Alluvial (Sankey-style) diagrams for categorical data
+library(ggrepel)         # Prevent overlapping text labels in ggplot2
+library(LaCroixColoR)    # Fun, colorful palettes for plots
+library(randomcoloR)     # Automatically generate distinct colors
+library(RColorBrewer)    # Standard and diverging color palettes
+library(colorspace)      # Tools for choosing and manipulating colors
+
+# Visualization & Plotting - Specialized
+library(circlize)        # Chord and circular plots (great for gene/function links)
+library(treemap)         # Visualize hierarchical data using nested rectangles
+library(dendextend)      # Enhances dendrograms (e.g., for clustering heatmaps)
+library(networkD3)       # Interactive network diagrams using D3.js
+
+# Functional Enrichment & GO Tools
+library(clusterProfiler)     # GO/KEGG enrichment analysis, visualizations
+library(topGO)               # GO enrichment with graph-based statistics
+library(rrvgo)               # Reduce GO redundancy and cluster similar terms
+library(simplifyEnrichment)  # Cluster and visualize enrichment results
+library(GO.db)               # Gene Ontology database terms and relationships
+library(org.Hs.eg.db)        # Human gene annotation (Entrez, GO, symbol)
+
+# Tidyverse & Data Wrangling
+library(tidyverse)      # Collection of core packages (ggplot2, dplyr, etc.)
+library(dplyr)          # Data manipulation with pipes and verbs
+library(purrr)          # Functional programming tools (e.g., map, reduce)
+library(forcats)        # Tools for working with categorical variables (factors)
+
+# Annotation & Metadata
+library(annotate)       # Access annotation data (GO, Entrez, etc.) for features
+
+# Web & Interactive Output
+library(htmltools)      # Create and style HTML content
+library(htmlwidgets)    # Build interactive visualizations for the web
+
+```
+
+
+
+##################################################################################
+##                            Colour Palettes                                   ##
+##################################################################################
+
+# Colour Palettes
+```{r}
+n <- 29
+palette <- distinctColorPalette(n)
+c28 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", "gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown", "firebrick3", "darkslategray", "gray0"
+)
+
+day_palette <- c("black", "#FFED00")
+diel_palette <- c("midnightblue", "slategray", "gold", "orange")
+diel_palette_ordered <- c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange")
+
+safe_colorblind_palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
+                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+                             
+
+palette_all <- c("honeydew", "honeydew1", "honeydew2", "honeydew3", "honeydew4", "hotpink", "hotpink1", "hotpink2", "hotpink3", "hotpink4", "indianred", "indianred1", "indianred2", "indianred3", "indianred4", "ivory", "ivory1", "ivory2", "ivory3", "ivory4", "khaki", "khaki1", "khaki2", "khaki3", "khaki4", "lavender", "lavenderblush", "lavenderblush1", "lavenderblush2", "lavenderblush3", "lavenderblush4", "lawngreen", "lemonchiffon", "lemonchiffon1", "lemonchiffon2", "lemonchiffon3", "lemonchiffon4", "lightblue", "lightblue1", "lightblue2", "lightblue3", "lightblue4", "lightcoral", "lightcyan", "lightcyan1", "lightcyan2", "lightcyan3", "lightcyan4", "lightgoldenrod", "lightgoldenrod1", "lightgoldenrod2", "lightgoldenrod3", "lightgoldenrod4", "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightpink1", "lightpink2", "lightpink3", "lightpink4", "lightsalmon", "lightsalmon1", "lightsalmon2", "lightsalmon3", "lightsalmon4", "lightseagreen", "lightskyblue", "lightskyblue1", "lightskyblue2", "lightskyblue3", "lightskyblue4", "lightslateblue", "lightslategray", "lightslategrey", "lightsteelblue", "lightsteelblue1", "lightsteelblue2", "lightsteelblue3", "lightsteelblue4", "lightyellow", "lightyellow1", "lightyellow2", "lightyellow3", "lightyellow4", "limegreen", "linen", "magenta", "magenta1", "magenta2", "magenta3", "magenta4", "maroon", "maroon1", "maroon2", "maroon3", "maroon4", "mediumaquamarine", "mediumblue", "mediumorchid", "mediumorchid1", "mediumorchid2", "mediumorchid3", "mediumorchid4", "mediumpurple", "mediumpurple1", "mediumpurple2", "mediumpurple3", "mediumpurple4", "mediumseagreen", "mediumslateblue", "mediumspringgreen", "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "mistyrose1", "mistyrose2", "mistyrose3", "mistyrose4", "moccasin", "navajowhite", "navajowhite1", "navajowhite2", "navajowhite3", "navajowhite4", "navy", "navyblue", "oldlace", "olivedrab", "olivedrab1", "olivedrab2", "olivedrab3", "olivedrab4", "orange", "orange1", "orange2", "orange3", "orange4", "orangered", "orangered1", "orangered2", "orangered3", "orangered4", "orchid", "orchid1", "orchid2", "orchid3", "orchid4", "palegoldenrod", "palegreen", "palegreen1", "palegreen2", "palegreen3", "palegreen4", "paleturquoise", "paleturquoise1", "paleturquoise2", "paleturquoise3", "paleturquoise4", "palevioletred", "palevioletred1", "palevioletred2", "palevioletred3", "palevioletred4", "papayawhip", "peachpuff", "peachpuff1", "peachpuff2", "peachpuff3", "peachpuff4", "peru", "pink", "pink1", "pink2", "pink3", "pink4", "plum", "plum1", "plum2", "plum3", "plum4", "powderblue", "purple", "purple1", "purple2", "purple3", "purple4", "red", "red1", "red2", "red3", "red4", "rosybrown", "rosybrown1", "rosybrown2", "rosybrown3", "rosybrown4", "royalblue", "royalblue1", "royalblue2", "royalblue3", "royalblue4", "saddlebrown", "salmon", "salmon1", "salmon2", "salmon3", "salmon4", "sandybrown", "seagreen", "seagreen1", "seagreen2", "seagreen3", "seagreen4", "seashell", "seashell1", "seashell2", "seashell3", "seashell4", "sienna", "sienna1", "sienna2", "sienna3", "sienna4", "skyblue", "skyblue1", "skyblue2", "skyblue3", "skyblue4", "slateblue", "slateblue1", "slateblue2", "slateblue3", "slateblue4", "slategray", "slategray1", "slategray2", "slategray3", "slategray4", "slategrey", "snow", "snow1", "snow2", "snow3", "snow4", "springgreen", "springgreen1", "springgreen2", "springgreen3", "springgreen4", "steelblue", "steelblue1", "steelblue2", "steelblue3", "steelblue4", "tan", "tan1", "tan2", "tan3", "tan4", "thistle", "thistle1", "thistle2", "thistle3", "thistle4", "tomato", "tomato1", "tomato2", "tomato3", "tomato4", "turquoise", "turquoise1", "turquoise2", "turquoise3", "turquoise4", "violet", "violetred", "violetred1", "violetred2", "violetred3", "violetred4", "wheat", "wheat1", "wheat2", "wheat3", "wheat4", "whitesmoke", "yellow", "yellow1", "yellow2", "yellow3", "yellow4", "yellowgreen")
+
+```
+
+
+#Metadata
+```{r}
+#DIEL
+meta<- read.delim("/path/to/data/data/curacao_mapping.txt", sep="\t")
+meta2<- meta %>% 
+  filter(project=="Diel") %>%
+  dplyr::select(sample_id, diel_code, diel_day, diel_time) %>%
+  mutate(diel_time_num = 
+           case_when(
+             diel_time=="T12A"~0,
+             diel_time=="T6A"~6,
+             diel_time=="T12P"~12,
+             diel_time=="T6P"~18,
+             TRUE~100
+           )
+           )
+
+```
+
+
+#Make the files list and import ReadsPerGene.out.tab
+```{r}
+
+# Define your samples and path to counts
+samples <- c(
+  "T103", "T104", "T105", "T13", "T14", "T15", "T22", "T23", "T24",
+  "T31", "T32", "T33", "T4", "T40", "T41", "T42", "T49", "T5", "T50",
+  "T51", "T58", "T59", "T6", "T60", "T67", "T68", "T69", "T76", "T77",
+  "T78", "T85", "T86", "T87", "T94", "T95", "T96"
+)
+
+
+file_paths <- paste0("/path/to/data/data/pstr_rnaseq_diel/breviolum_star_counts/", samples, "_ReadsPerGene.out.tab")
+
+# Read in all files (assuming unstranded, column 2)
+read_counts <- lapply(file_paths, function(fp) {
+  df <- read.delim(fp, header = FALSE)
+  df <- df[, c(1, 2)]  # Keep GeneID and unstranded count
+  sample_name <- gsub("_ReadsPerGene.out.tab", "", basename(fp))
+  colnames(df) <- c("GeneID", sample_name)
+  return(df)
+})
+
+# Remove the first 4 rows from every sample
+read_counts_cleaned <- lapply(read_counts, function(df) {
+  df[-c(1:4), ]
+})
+
+# Merge all by GeneID
+count_matrix <- reduce(read_counts_cleaned, full_join, by = "GeneID")
+
+# Optional: clean up column names
+colnames(count_matrix)[-1] <- samples
+
+# Reduce the list of data frames into a single data frame by merging on GeneID
+merged_counts <- Reduce(function(x, y) merge(x, y, by = "GeneID"), read_counts_cleaned)
+
+#Note: merged counts is now similar to a tpm object, move forward with filtering!
+counts_df <- merged_counts
+
+# Set gene IDs as row names
+rownames(counts_df) <- counts_df$GeneID
+
+# Remove the GeneID column
+counts_df <- counts_df[, -1]
+```
+
+#Adjust metadata
+```{r}
+#files<- list.files("/Users/bradleyweiler/workdrive/My Drive/Weiler et al. Disease PSTR (Data)/data/rnaseq_disease/breviolum_star_counts/", pattern="_ReadsPerGene.out.tab", full.names = TRUE)
+
+files<- list.files("/path/to/data/data/pstr_rnaseq_diel/breviolum_star_counts/", pattern="_ReadsPerGene.out.tab", full.names = TRUE)
+order<- files %>% 
+  basename %>%
+  str_remove(.,"_ReadsPerGene.out.tab")
+names(files)<- order
+meta3<- meta2 %>% 
+  mutate(rownames=sample_id) %>%
+  column_to_rownames("rownames")
+meta3<- meta3[order,] %>% 
+  droplevels()
+meta3 <- meta3 %>% mutate(daynight=ifelse(
+    diel_time %in% c("T12P","T6P"),"day","night"
+  )
+)
+meta3 <- mutate(meta3,
+                day = as.numeric(str_remove(diel_day, "D")),
+                true_time = diel_time_num + (24*(day-1)))
+```
+
+##################################################################################
+##                            Filtering Heuristic                               ##
+##################################################################################
+
+
+#Filtering Heuristic to purge reads
+```{r}
+nightSamples <- c("T4","T5","T6",
+                  "T13","T14","T15",
+                  "T40","T41","T42",
+                  "T49","T50","T51",
+                  "T76","T77","T78",
+                  "T85","T86","T87")
+
+midnightSamples <- c("T4","T5","T6",
+                  "T40","T41","T42",
+                  "T76","T77","T78"
+                  )
+dawnSamples <- c("T13","T14","T15",
+                  "T49","T50","T51",
+                  "T85","T86","T87")
+
+
+daySamples   <- c("T22","T23","T24",
+                  "T31","T32","T33",
+                  "T58","T59","T60",
+                  "T67","T68","T69",
+                  "T94","T95","T96",
+                  "T103","T104","T105")
+
+middaySamples   <- c("T22","T23","T24",
+                  "T58","T59","T60",
+                  "T94","T95","T96")
+duskSamples   <- c("T31","T32","T33",
+                  "T67","T68","T69",
+                  "T103","T104","T105")
+
+## 2. Create logical vectors indicating whether each gene is >= 1 for *every* sample in day/night.
+#DAY NIGHT DO NOT USE
+keep_night <- rowSums(counts_df[, nightSamples] > 1) == length(nightSamples)
+keep_day   <- rowSums(counts_df[, daySamples]   > 1) == length(daySamples)
+
+#By Timepoint
+keep_midnight <- rowSums(counts_df[, midnightSamples] > 1) == length(midnightSamples)
+keep_dawn   <- rowSums(counts_df[, dawnSamples]   > 1) == length(dawnSamples)
+keep_midday <- rowSums(counts_df[, middaySamples] > 1) == length(middaySamples)
+keep_dusk   <- rowSums(counts_df[, duskSamples]   > 1) == length(duskSamples)
+
+## 3. Combine them so a gene is kept if it is above 1 in all night samples OR in all day samples.
+#DAY NIGHT DO NOT USE
+keep <- keep_night | keep_day
+
+#By Timepoint
+keep <- keep_midnight | keep_dawn | keep_midday | keep_dusk
+```
+
+
+
+##################################################################################
+##                               DDS Assembly                                   ##
+##################################################################################
+
+
+#Create DESeq Object
+```{r}
+dds_raw <- DESeqDataSetFromMatrix(
+                              countData = counts_df,
+                              colData = meta3,
+                              design = ~diel_day + diel_time
+                              )
+#Filter the deseq dataset from our filtering heuristic
+dds<- dds_raw[keep, ]
+
+#Reduce from diel_day using LRT
+dds_new <- DESeq(dds, reduced = ~diel_day, test = "LRT")
+
+```
+
+
+###################################################################################################
+####################                        Emapper                            ####################
+###################################################################################################
+
+#Functional annotations using EGGNOG mapper
+```{r}
+emap<-read.csv("/path/to/data/data/pstr_rnaseq_diel/breviolum.emapper.annotations.csv", header=TRUE)
+
+emap <- mutate(emap, gene_id = str_remove(query, ".t[0-9]"))
+
+emap <- emap %>%
+  rename(COG_category = COG.Functional.cat.)
+
+emap_filtered <- emap %>% filter(!grepl("Bacteria", taxonomic.scope))
+
+
+#Make a matrix containing the information we want, such as the query transcripts and their corresponding COG categories
+cog<-emap %>%
+  dplyr::select(query,COG_category)
+
+#Next, separate multiple COGs from the same query transcript (ex. transcript 1 has P, I, and Q)
+cog<- cog %>%
+ separate_rows(., COG_category, sep="") %>%
+ subset(., COG_category != "") %>% #then remove all empty rows
+ mutate(query=str_remove(query,".t[0-9]")) #remove garbage verbiage from the queries
+
+#GOs
+tog<-emap %>%
+  dplyr::select(query,GOs)
+
+tog<- tog %>%
+ separate_rows(., GOs, sep=",") %>%
+ mutate(query=str_remove(query,".t[0-9]"))
+
+write.table(tog,file="/path/to/data/data/pstr_rnaseq_diel/symbgeneID2GO.txt",col.names = FALSE,row.names = FALSE,sep="\t",quote = FALSE)
+
+symbgeneID2GO <- readMappings(file = "/path/to/data/data/pstr_rnaseq_diel/symbgeneID2GO.txt")
+
+
+symbgeneID2GO <- symbgeneID2GO[                    # keep elements where GO is not blank!
+  !sapply(symbgeneID2GO, function(x)
+           length(x) == 0 || all(x == "" | is.na(x)))
+]
+```
+
+
+###################################################################################################
+####################                   TOPGO ON TIMEPOINTS                     ####################
+###################################################################################################
+
+```{r}
+
+# Define the path to your destination
+goresults_path <- "/path/to/data/analysis/pstr_rnaseq_diel/"  # Adjust for your system if needed
+
+night_sig<- results(dds_new, contrast=c("diel_time", "T12A", "T6A"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T12A", "T6A"), alpha=0.01))
+
+daybreak_sig<- results(dds_new, contrast=c("diel_time", "T6A", "T12P"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T6A", "T12P"), alpha=0.01))
+
+day_sig<- results(dds_new, contrast=c("diel_time", "T12P", "T6P"), alpha=0.01) %>% 
+    as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T12P", "T6P"), alpha=0.01))
+
+nightfall_sig<- results(dds_new, contrast=c("diel_time", "T6P", "T12A"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05)
+summary(results(dds_new, contrast=c("diel_time", "T6P", "T12A"), alpha=0.01))
+
+
+nightfall_sig_go_up <- nightfall_sig %>% filter(log2FoldChange>0.58) %>% rownames(.) %>% as.character()
+nightfall_sig_go_down <- day_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.) %>% as.character()
+nightfall_sig_go <- c(nightfall_sig_go_up, nightfall_sig_go_down)
+
+night_sig_go_up <- night_sig %>% filter(log2FoldChange>0.58) %>% rownames(.) %>% as.character()
+night_sig_go_down <- nightfall_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.) %>% as.character()
+night_sig_go <- c(night_sig_go_up, night_sig_go_down)
+
+daybreak_sig_go_up <- daybreak_sig %>% filter(log2FoldChange>0.58) %>% rownames(.) %>% as.character()
+daybreak_sig_go_down <- night_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.) %>% as.character()
+daybreak_sig_go <- c(daybreak_sig_go_up, daybreak_sig_go_down)
+
+day_sig_go_up <- day_sig %>% filter(log2FoldChange>0.58) %>% rownames(.)  %>% as.character()
+day_sig_go_down <- daybreak_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.)  %>% as.character()
+day_sig_go <- c(day_sig_go_up, day_sig_go_down)
+
+
+#IF YOU WANT TO SEE ALL SIG UNQIUE DE GENES
+# Night (12AM) — based on T12A > T6A and T6P < T12A
+night_sig_go_up <- night_sig %>%
+  filter(log2FoldChange > 0.58) %>%
+  rownames() %>%
+  as.character()
+
+night_sig_go_down <- nightfall_sig %>%
+  filter(log2FoldChange < -0.58) %>%
+  rownames() %>%
+  as.character()
+
+night_sig_go <- unique(c(night_sig_go_up, night_sig_go_down))
+
+
+# Daybreak (6AM) — based on T6A > T0.582P and T0.582A < T6A
+daybreak_sig_go_up <- daybreak_sig %>%
+  filter(log2FoldChange > 0.58) %>%
+  rownames() %>%
+  as.character()
+
+daybreak_sig_go_down <- night_sig %>%
+  filter(log2FoldChange < -0.58) %>%
+  rownames() %>%
+  as.character()
+
+daybreak_sig_go <- unique(c(daybreak_sig_go_up, daybreak_sig_go_down))
+
+
+# Midday (0.582PM) — based on T0.582P > T6P and T6A < T0.582P
+day_sig_go_up <- day_sig %>%
+  filter(log2FoldChange > 0.58) %>%
+  rownames() %>%
+  as.character()
+
+day_sig_go_down <- daybreak_sig %>%
+  filter(log2FoldChange < -0.58) %>%
+  rownames() %>%
+  as.character()
+
+day_sig_go <- unique(c(day_sig_go_up, day_sig_go_down))
+
+
+# Dusk (6PM) — based on T6P > T0.582A and T0.582P < T6P
+nightfall_sig_go_up <- nightfall_sig %>%
+  filter(log2FoldChange > 0.58) %>%
+  rownames() %>%
+  as.character()
+
+nightfall_sig_go_down <- day_sig %>%
+  filter(log2FoldChange < -0.58) %>%
+  rownames() %>%
+  as.character()
+
+nightfall_sig_go <- unique(c(nightfall_sig_go_up, nightfall_sig_go_down))
+
+
+
+## Combine all genes from the lists into a unique set
+all_genespoints <- unique(c(nightfall_sig_go, night_sig_go, daybreak_sig_go, day_sig_go))
+
+# Initialize the named vector with all genes set to 0
+all_genes_vector_timepoints <- rep(0, length(all_genes_timepoints))
+names(all_genes_vector_timepoints) <- all_genes_timepoints
+
+# Define the list of gene lists with their timepoint names
+timepoints <- list(
+  nightfall_sig_go = nightfall_sig_go,
+  night_sig_go = night_sig_go,
+  daybreak_sig_go = daybreak_sig_go,
+  day_sig_go = day_sig_go
+)
+
+# Loop through each timepoint
+for (timepoint_name in names(timepoints)) {
+  
+  # Retrieve the gene list for the current timepoint
+  gene_list <- timepoints[[timepoint_name]]
+  
+  # Create a fresh copy of the allGenes vector for each timepoint
+  geneList_vector_timepoints <- all_genes_vector_timepoints
+  
+  # Mark the genes present in the current gene list
+  geneList_vector_timepoints[gene_list] <- 1  # Ensure gene IDs match
+  
+  # Verify that the genes are correctly marked
+  num_genes_marked <- sum(geneList_vector_timepoints)
+  cat("Timepoint:", timepoint_name, "- Number of genes marked as significant:", num_genes_marked, "\n")
+  
+  # Define the gene selection function
+  geneSel <- function(x) x == 1
+  
+  # Create the topGOdata object
+  GOdata <- new(
+    "topGOdata",
+    description = paste("GO analysis of", timepoint_name),
+    ontology = "BP",
+    allGenes = geneList_vector_timepoints,
+    geneSel = geneSel,
+    annot = annFUN.gene2GO,
+    gene2GO = SymbgeneID2GO,
+    nodeSize = 5
+  )
+  
+  # Perform the GO enrichment test
+  go_results <- runTest(GOdata, algorithm = "classic", statistic = "fisher")
+  
+  # Extract the results into a table
+  results_table <- GenTable(GOdata, classicFisher = go_results, orderBy = "classicFisher", topNodes = 5)
+  
+  # Assign the results to a variable named after the timepoint
+  assign(paste0(timepoint_name, "_go_results"), results_table)
+  
+  # Write the results to a CSV file
+  #write.csv(results_table, file = paste0(goresults_path, "symbsGO_results_", timepoint_name, ".csv"), row.names = FALSE)
+}
+
+```
+
+
+###################################################################################################
+####################                          Beta                             ####################
+###################################################################################################
+
+#PCA
+```{r}
+dds_raw <- DESeqDataSetFromMatrix(
+                              countData = counts_df,
+                              colData = meta3,
+                              design = ~diel_day + diel_time
+                              )
+#Filter the deseq dataset from our filtering heuristic
+dds<- dds_raw[keep, ]
+
+#Get the VSD from the VST
+vsd<- vst(dds)
+
+#plot the PCA using diel_time
+pca_df <- plotPCA(vsd, intgroup = "diel_time", ntop = 500, returnData = TRUE)
+
+allsymb_dieltime<-plotPCA(vsd, intgroup="diel_time", ntop=500) + scale_color_manual(values=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"))+
+# Add ellipses around each group
+  stat_ellipse(aes(color = diel_time), level = 0.95, size = 0.5) +
+  scale_y_reverse()
+
+
+
+# Calculate percent variance explained by PC1 and PC2
+percentVar <- round(100 * attr(pca_df, "percentVar"))
+labs <- paste0("PC", 1:2, ": ", percentVar[1:2], "% variance")
+
+#invert the data if needed
+#pca_df$PC2 <- -pca_df$PC2
+
+# Plot manually with ggplot
+#symb_dieltime <-
+#  ggplot(pca_df, aes(x = PC1, y = PC2, color = diel_time)) +
+#  geom_point(size = 3) +
+#  scale_color_manual(values = c("T12A"="midnightblue",
+#                                "T6A"="slategray",
+#                                "T12P"="gold",
+#                                "T6P"="orange")) +
+#  stat_ellipse(aes(color = diel_time), level = 0.95, size = 0.5) +
+#  theme_bw()
+
+symb_dieltime <- ggplot(pca_df, aes(x = PC1, y = PC2, color = diel_time)) +
+  geom_point(size = 3) +
+  stat_ellipse(aes(color = diel_time), level = 0.95, size = 0.5) +
+  scale_color_manual(values = c("T12A" = "midnightblue",
+                                "T6A"  = "slategray",
+                                "T12P" = "gold",
+                                "T6P"  = "orange")) +
+  labs(x = labs[1], y = labs[2], color = "Diel Time") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right")
+
+symb_dieltime
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/DEPCA_allpstr_dieltime_symb.pdf", width = 9, height = 8)
+symb_dieltime
+dev.off()
+
+symb_dieltime <- ggplot(pca_df, aes(x = PC1, y = PC2, color = diel_time)) +
+  geom_point(size = 3) +
+  stat_ellipse(aes(color = diel_time), level = 0.95, size = 0.5) +
+  scale_color_manual(values = c("T12A" = "midnightblue",
+                                "T6A"  = "slategray",
+                                "T12P" = "gold",
+                                "T6P"  = "orange")) +
+  labs(x = labs[1], y = labs[2], color = "Diel Time") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right")
+
+symb_dieltime
+```
+
+
+
+###################################################################################################
+###############                            CHORD PLOTS                              ###############
+###################################################################################################
+
+#Separate the time points by up and down reg
+```{r}
+
+#NOT PROPORTIONAL
+de_matrix_contrasts <- rbind(
+
+  # Night Sig Upregulated and Downregulated (with fix for all-zeros issue)
+  night_sig %>% filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    complete(COG_category = unique(cog$COG_category), fill = list(count = 0)) %>%  # Ensure zero-fill
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T12A vs. T6A Up"),
+
+  night_sig %>% filter(padj < 0.05 & log2FoldChange < -0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T12A vs. T6A Down"),
+
+  # Nightfall Sig Upregulated and Downregulated
+  nightfall_sig %>% filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T6P vs. T12A Up"),
+
+  nightfall_sig %>% filter(padj < 0.05 & log2FoldChange < -0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T6P vs. T12A Down"),
+
+  # Day Sig Upregulated and Downregulated
+  day_sig %>% filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T12P vs. T6P Up"),
+
+  day_sig %>% filter(padj < 0.05 & log2FoldChange < -0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T12P vs. T6P Down"),
+
+  # Daybreak Sig Upregulated and Downregulated
+  daybreak_sig %>% filter(padj < 0.05 & log2FoldChange > 0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T6A vs. T12P Up"),
+
+  daybreak_sig %>% filter(padj < 0.05 & log2FoldChange < -0.58) %>%
+    rownames_to_column("query") %>%
+    inner_join(cog) %>%
+    group_by(COG_category) %>%
+    summarize(count = n()) %>%
+    #mutate(count = count / sum(count)) %>%
+    mutate(comparison = "T6A vs. T12P Down")
+
+) %>%
+  pivot_wider(id_cols = comparison, names_from = COG_category, values_from = count) %>%
+  #rename(UNA = "-") %>%
+  column_to_rownames(var = "comparison") %>%
+  mutate_if(is.numeric, ~replace_na(., 0)) %>%
+  as.matrix()
+
+# Remove the column named "Y" from the matrix
+de_matrix_contrasts <- de_matrix_contrasts[, !(colnames(de_matrix_contrasts) %in% "Y")]
+de_matrix_contrasts <- de_matrix_contrasts[, !(colnames(de_matrix_contrasts) %in% "W")]
+# Define sector colors
+# Generate a random number of distinct colors for COG categories
+#n <- length(colnames(de_matrix_prop))  # Use the length of your COGs vector
+#cog_colours <- distinctColorPalette(n)
+
+cog_colours <- c(
+  "#DE5D64", "#AEE5D4", "#B888E1", "#DD56DC", "#DEDBDF", "#8646E7", "#6FE762",
+  "#D5BC60", "#D75DAC", "#5EA6B3", "#E0E5B5", "#CFE644", "#AAA38C", "#CDB7E3",
+  "#72E1E8", "#E8AD9D", "#7AB1E5", "#72A667", "#926F8C", "#D38646", "#78E9B1",
+  #"#E99BCA", 
+  "#5C72D0" 
+  #"#CCE784"
+)
+
+# Specify the order of COGs, where UNA is Unannotated
+cog_order <- c("A", "B", "C", "D", "E", "F", "G", "H", "I", 
+                "J", "K", "L", "M", "N", "O", "P", "Q", 
+                "S", "T", "U", "V", "Z")
+
+# Define colors for time points (Up and Down regulation)
+
+time_colours <- rev(c(
+  "T12A vs. T6A Up" = "midnightblue",
+  "T6P vs. T12A Down" = "midnightblue",
+  "T6A vs. T12P Up" = "slategray", 
+  "T12A vs. T6A Down" = "slategray",
+  "T12P vs. T6P Up" = "gold", 
+  "T6A vs. T12P Down" = "gold", 
+  "T6P vs. T12A Up" = "orange",
+  "T12P vs. T6P Down" = "orange"
+))
+
+# Define time points in the desired order (from left to right)
+time_points <- rev(c(
+  "T12A vs. T6A Up",
+  "T6P vs. T12A Down",
+  "T6A vs. T12P Up",
+  "T12A vs. T6A Down",
+  "T12P vs. T6P Up",
+  "T6A vs. T12P Down",
+  "T6P vs. T12A Up",
+  "T12P vs. T6P Down"
+))
+
+# Specify the order of time points for rows (matching desired plot arrangement)
+time_order <- rev(c(
+  "T12A vs. T6A Up",
+  "T6P vs. T12A Down",
+  "T6A vs. T12P Up",
+  "T12A vs. T6A Down",
+  "T12P vs. T6P Up",
+  "T6A vs. T12P Down",
+  "T6P vs. T12A Up",
+  "T12P vs. T6P Down"
+))
+
+# Convert row and column names of de_matrix_prop to factors with specified levels
+# Ensure correct matching of row and column names
+row_indices <- match(time_order, rownames(de_matrix_contrasts))
+col_indices <- match(cog_order, colnames(de_matrix_contrasts))
+
+# Filter out any NA indices to avoid adding empty rows/columns
+row_indices <- na.omit(row_indices)
+col_indices <- na.omit(col_indices)
+
+# Reorder the matrix
+de_matrix_contrasts <- de_matrix_contrasts[row_indices, col_indices, drop = FALSE]
+
+# Combine COG colors and time point colors into a single named vector
+sector_colors <- setNames(c(cog_colours, time_colours), c(colnames(de_matrix_contrasts), time_points))
+
+# Specify the name of the PDF file
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/pstr_symb_chord_dieltime_de_upanddown_dds.pdf", width = 20, height = 12)  # Adjust dimensions as needed
+
+# Chord Diagram
+chordDiagram(de_matrix_contrasts, 
+             transparency = 0.4, 
+             grid.col = sector_colors, 
+             annotationTrack = "grid")  # Use "grid" to avoid default labels
+
+# Add text annotation to each sector
+circos.trackPlotRegion(track.index = 1, bg.border = NA, panel.fun = function(x, y) {
+  sector.name = get.cell.meta.data("sector.index")
+  circos.text(CELL_META$xcenter, 
+              CELL_META$ylim[2] + mm_y(5), 
+              sector.name, 
+              facing = "outside",  # Keep this as "outside"
+              niceFacing = TRUE, 
+              adj = c(0.5, 0))  # Center the text
+})
+
+# Prepare a data frame for the legend, including "UNK"
+cog_definitions <- c(
+  "A" = "RNA processing and modification",
+  "B" = "Chromatin structure and dynamics",
+  "C" = "Energy production and conversion",
+  "D" = "Cell cycle control, division, chromosome partitioning",
+  "E" = "Amino acid transport and metabolism",
+  "F" = "Nucleotide transport and metabolism",
+  "G" = "Carbohydrate transport and metabolism",
+  "H" = "Coenzyme transport and metabolism",
+  "I" = "Lipid transport and metabolism",
+  "J" = "Translation, ribosomal structure, biogenesis",
+  "K" = "Transcription",
+  "L" = "Replication, recombination, repair",
+  "M" = "Cell wall/membrane/envelope biogenesis",
+  "N" = "Cell motility",
+  "O" = "Posttranslational modification, turnover, chaperones",
+  "P" = "Inorganic ion transport and metabolism",
+  "Q" = "Secondary metabolites biosynthesis, transport, catabolism",
+  "S" = "Function unknown",
+  "T" = "Signal transduction mechanisms",
+  "U" = "Intracellular trafficking and secretion",
+  "V" = "Defense mechanisms",
+  #"W" = "Extracellular structures",
+  #"Y" = "Nuclear structure",
+  "Z" = "Cytoskeleton",
+  "UNA" = "Unannotated"  # Add UNA to definitions
+)
+
+# Create a data frame for the legend
+legend_df <- data.frame(
+  COG = names(cog_definitions),
+  Definition = cog_definitions,
+  Color = sector_colors[names(cog_definitions)]
+)
+
+# Create a legend
+legend("topright", 
+       legend = paste(legend_df$COG, "-", legend_df$Definition), 
+       fill = legend_df$Color, 
+       border = NA, 
+       bty = "n",
+       cex = 0.8)  # Adjust text size with cex
+
+# Close the PDF device
+dev.off()
+
+```
+
+
+###################################################################################################
+####################                         Volcano                           ####################
+###################################################################################################
+
+```{r}
+
+night_sig<- results(dds_new, contrast=c("diel_time", "T12A", "T6A"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T12A", "T6A"), alpha=0.01))
+
+daybreak_sig<- results(dds_new, contrast=c("diel_time", "T6A", "T12P"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T6A", "T12P"), alpha=0.01))
+
+day_sig<- results(dds_new, contrast=c("diel_time", "T12P", "T6P"), alpha=0.01) %>% 
+    as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T12P", "T6P"), alpha=0.01))
+
+nightfall_sig<- results(dds_new, contrast=c("diel_time", "T6P", "T12A"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05)
+summary(results(dds_new, contrast=c("diel_time", "T6P", "T12A"), alpha=0.01))
+
+# Define valid R variable names
+plot_names <- c("T12aV6a", "T6aV12p", "T12pV6p", "T6pV12a")
+
+# Map to contrasts and titles
+contrast_list <- list(
+  T12aV6a = c("T6A", "T12A"),  # 6am - 12am
+  T6aV12p = c("T12P", "T6A"),  # 12pm - 6am
+  T12pV6p = c("T6P", "T12P"),  # 6pm - 12pm
+  T6pV12a = c("T12A", "T6P")   # 12am - 6pm
+)
+
+titles <- list(
+  T12aV6a = "Night (12am, -LFC) vs Daybreak (6am, +LFC)",
+  T6aV12p = "Daybreak (6am, -LFC) vs Midday (12pm, +LFC)",
+  T12pV6p = "Midday (12pm, -LFC) vs Dusk (6pm, +LFC)",
+  T6pV12a = "Dusk (6pm, -LFC) vs Night (12am, +LFC)"
+)
+
+
+# Create a list to hold precomputed contrast results
+contrast_results <- list()
+
+for (plot_name in names(contrast_list)) {
+  
+  cont <- contrast_list[[plot_name]]
+  
+  # Run DESeq2 contrast only once
+  res <- results(dds_new, contrast = c("diel_time", cont[1], cont[2]), alpha = 0.01)
+  res_df <- as.data.frame(res)
+  res_df$gene <- rownames(res_df)
+  
+  # Join COG categories from emap
+  res_df <- res_df %>%
+  left_join(emap, by = c("gene" = "gene_id")) %>%
+  mutate(
+    negLog10Pvalue = -log10(pvalue),
+    significant = padj < 0.05 & abs(log2FoldChange) > 1 & negLog10Pvalue > 10,
+    label_gene = case_when(
+      significant & !is.na(COG_category) ~ "COG-annotated",
+      significant ~ "Significant",
+      TRUE ~ "Not Significant"
+    )
+  )
+
+  
+  contrast_results[[plot_name]] <- res_df
+}
+
+
+
+# Generate plots from precomputed results
+for (plot_name in names(contrast_results)) {
+  
+  res_df <- contrast_results[[plot_name]]
+  label <- titles[[plot_name]]
+  
+  plot_obj <- ggplot(res_df, aes(x = log2FoldChange, y = negLog10Pvalue)) +
+  geom_point(aes(color = label_gene)) +
+  scale_color_manual(values = c(
+    "COG-annotated" = "blue",
+    "Significant" = "red",
+    "Not Significant" = "black"
+  )) +
+  geom_text_repel(data = subset(res_df, label_gene == "COG-annotated"),
+                  aes(label = COG_category),
+                  color = "blue", size = 3, max.overlaps = 100) +
+  theme_minimal() +
+  labs(x = "Log2 Fold Change", y = "-log10 P-value", title = label) +
+  theme(legend.position = "none") +
+    xlim(-10, 10)
+  
+  assign(plot_name, plot_obj)
+}
+
+
+print(T12aV6a)
+print(T6aV12p)
+print(T12pV6p)
+print(T6pV12a)
+library(patchwork)
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/symb_diel_volcano_wLabels_1-4_10.pdf", width = 15, height = 5)
+T12aV6a + T6aV12p + T12pV6p + T6pV12a +
+  plot_layout(nrow = 1)
+dev.off()
+
+
+# Collect significant genes across all contrasts
+sig_genes <- bind_rows(contrast_results, .id = "contrast") %>%
+  filter(significant) %>%
+  select(contrast, gene, log2FoldChange, pvalue, padj, COG.Functional.cat., label_gene)
+
+# Save to CSV
+write.csv(sig_genes, "~/Desktop/symbiont_significant_genes_with_COG.csv", row.names = FALSE)
+
+```
+
+###################################################################################################
+####################                        Heatmaps                           ####################
+###################################################################################################
+
+#generate heatmaps
+```{r}
+#Get the results summary
+res <- results(dds_new, alpha = 0.01)
+summary(res, alpha = 0.05) #ignore the up and down reg number, misleading for LRT, meant for Wald pairwise
+res.df <- as.data.frame(res)
+
+#Set the significance
+sig.genes <- rownames(filter(res.df, padj <= 0.01))
+
+#Get the VSD for the heatmap
+vsd<- vst(dds_new)
+
+mat <- assay(vsd)[sig.genes,] %>% t() %>% scale() %>% t() #scaled expression of sig genes for Complex heatmap
+nrow(mat)
+column_ha <- columnAnnotation(diel_time = meta3$diel_time, 
+                              daynight= meta3$daynight,
+                              #sample=anno_text(meta3$sample_id), 
+                              col=list(
+                                diel_time=c("T12A"="midnightblue","T6A"="slategray","T12P"="gold","T6P"="orange"), 
+                                daynight=c("night"="black","day"="#FFED00")
+                              ))
+hm<-Heatmap(mat,
+        name = "Scaled Expression",
+        top_annotation = column_ha,
+        #right_annotation = row_ha,
+        show_row_names = FALSE,
+        split = 6,
+        column_split = 2,
+        column_names_side = "top"
+        )
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/heatmap_symbs_6split.pdf", width = 12, height = 8)
+hm
+dev.off()
+```
+```{r}
+## TOPGODATA Heatmap CLUSTERS
+
+# Draw the heatmap to ensure dendrograms are calculated
+hm <- draw(hm)
+
+# Step 2: Use row_order() to extract the row order from each split
+# This will give you the row indices of each cluster (split)
+row_order <- row_order(hm)
+
+# Step 3: Access the actual gene names (rownames) for each split
+# If you split the rows into 2 clusters (split = 2), you'll have 2 lists
+cluster_1_genes <- rownames(mat)[row_order[[1]]] #DUSK
+cluster_2_genes <- rownames(mat)[row_order[[2]]] #MIDDAY
+cluster_3_genes <- rownames(mat)[row_order[[3]]] #LIGHT HOURS
+cluster_4_genes <- rownames(mat)[row_order[[4]]] #MORNING TO MIDDAY
+cluster_5_genes <- rownames(mat)[row_order[[5]]] #DUSK AND DARK HOURS
+cluster_6_genes <- rownames(mat)[row_order[[6]]] #DARK HOURS
+
+# Optional: Write the gene lists to a file for reference
+write.csv(cluster_1_genes, "/path/to/data/analysis/pstr_rnaseq_diel/heatmap_daynight_siggenes_cluster_1_genes_symb.csv", row.names = FALSE)
+write.csv(cluster_2_genes, "/path/to/data/analysis/pstr_rnaseq_diel/heatmap_daynight_siggenes_cluster_2_genes_symb.csv", row.names = FALSE)
+
+all_genes <- rownames(mat)  # all genes in the original matrix
+geneList_vector <- rep(0, length(all_genes))
+names(geneList_vector) <- all_genes
+
+# Step 2: Run topGO analysis for Cluster 1
+
+# Mark genes in cluster 1 as significant (1) in geneList_vector
+geneList_vector[names(geneList_vector) %in% cluster_1_genes] <- 1
+
+# Create the topGOdata object for cluster 1
+GOdata_cluster1 <- new(
+  "topGOdata",
+  description = "GO analysis of cluster 1",
+  ontology = "BP",  # Change to "MF" (Molecular Function) or "CC" (Cellular Component) as needed
+  allGenes = geneList_vector,  # All genes, with 1 for cluster 1 genes
+  geneSel = function(x) x == 1,  # Select the genes marked as 1
+  annot = annFUN.gene2GO,  # Annotation function
+  gene2GO = geneID2GOpredsim,  # Mapping from genes to GO terms
+  nodeSize = 10  # Minimum number of genes in GO term for testing
+)
+
+# Run the GO enrichment test (using Fisher's exact test)
+go_results_cluster1 <- runTest(GOdata_cluster1, algorithm = "classic", statistic = "fisher")
+
+# Extract the results (top 10 GO terms by p-value)
+results_table_cluster1 <- GenTable(GOdata_cluster1, classicFisher = go_results_cluster1, orderBy = "classicFisher", topNodes = 10)
+
+# Step 3: Save the results for Cluster 1
+write.csv(results_table_cluster1, "/path/to/data/analysis/pstr_rnaseq_diel/heatmap_daynight_siggenesGO_results_cluster1_newHeuristic.csv", row.names = FALSE)
+
+# Step 4: Repeat the process for Cluster 2
+
+# Reset the gene list vector for Cluster 2 analysis
+geneList_vector[names(geneList_vector) %in% all_genes] <- 0  # Set everything back to 0
+
+# Mark genes in cluster 2 as significant (1)
+geneList_vector[names(geneList_vector) %in% cluster_2_genes] <- 1
+
+# Create the topGOdata object for cluster 2
+GOdata_cluster2 <- new(
+  "topGOdata",
+  description = "GO analysis of cluster 2",
+  ontology = "BP",
+  allGenes = geneList_vector,
+  geneSel = function(x) x == 1,
+  annot = annFUN.gene2GO,
+  gene2GO = geneID2GOpredsim,
+  nodeSize = 10
+)
+
+# Run the GO enrichment test for cluster 2
+go_results_cluster2 <- runTest(GOdata_cluster2, algorithm = "classic", statistic = "fisher")
+
+# Extract the results (top 10 GO terms by p-value)
+results_table_cluster2 <- GenTable(GOdata_cluster2, classicFisher = go_results_cluster2, orderBy = "classicFisher", topNodes = 10)
+
+# Step 5: Save the results for Cluster 2
+write.csv(results_table_cluster2, "/path/to/data/analysis/pstr_rnaseq_diel/heatmap_daynight_siggenesGO_results_cluster2_newHeuristic.csv", row.names = FALSE)
+```
+
+
+############################################################################################################
+###############                                    TreeMaps                                  ###############
+############################################################################################################
+
+#Treemaps by Timepoint
+```{r}
+#dataframes
+night_sig_go_go_results
+daybreak_sig_go_go_results
+day_sig_go_go_results
+nightfall_sig_go_go_results
+
+# Step 1: Add a 'timepoint' column to each data frame
+night_sig_go_go_results <- night_sig_go_go_results %>%
+  mutate(timepoint = "Night")
+
+daybreak_sig_go_go_results <- daybreak_sig_go_go_results %>%
+  mutate(timepoint = "Daybreak")
+
+day_sig_go_go_results <- day_sig_go_go_results %>%
+  mutate(timepoint = "Day")
+
+nightfall_sig_go_go_results <- nightfall_sig_go_go_results %>%
+  mutate(timepoint = "Nightfall")
+
+# Step 2: Combine all data frames into one
+combined_diel_go_results <- bind_rows(
+  night_sig_go_go_results,
+  daybreak_sig_go_go_results,
+  day_sig_go_go_results,
+  nightfall_sig_go_go_results
+)
+
+# Step 3: Define custom colors for each timepoint
+diel_go_colours <- c(
+  "Night" = lighten("midnightblue", amount = 0),
+  "Nightfall" = lighten("orange", amount = 0),
+  "Daybreak" = lighten("slategray", amount = 0),
+  "Day" = lighten("gold", amount = 0)
+)
+
+combined_diel_go_results$timepoint <- factor(
+  combined_diel_go_results$timepoint,
+  levels = c("Night", "Nightfall", "Daybreak", "Day")
+)
+
+combined_diel_go_results <- combined_diel_go_results %>%
+  mutate(GO_Term = paste(GO.ID, Term, sep = ": "))
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/symb_timepoint_IDs_treemap_correcto.pdf", width = 20, height = 15)
+
+
+timepoint_treemap<- treemap(
+  combined_diel_go_results,
+  index = c("timepoint", "GO_Term"),  # Group by timepoint first, then GO terms
+  vSize = "Significant",                      # Size of boxes based on the Annotated count
+  vColor = "timepoint",                     # Color boxes by timepoint
+  type = "categorical",                     # Use categorical color scale for timepoint
+  palette = diel_go_colours,                  # Apply the custom colors defined above
+  title = "GO Enrichment Treemap by Timepoint",  # Title of the treemap
+  fontsize.labels = 12,                     # Label font size
+  fontsize.title = 16                       # Title font size
+)
+
+dev.off
+```
+
+
+
+############################################################################################################
+###############                               DOTPLOT/SANKEY                                 ###############
+############################################################################################################
+
+############################################################################################################
+###############                                    KEGG                                      ###############
+############################################################################################################
+
+
+#Revisiting and Testing
+```{r}
+
+night_sig<- results(dds_new, contrast=c("diel_time", "T12A", "T6A"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T12A", "T6A"), alpha=0.01))
+
+daybreak_sig<- results(dds_new, contrast=c("diel_time", "T6A", "T12P"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T6A", "T12P"), alpha=0.01))
+
+day_sig<- results(dds_new, contrast=c("diel_time", "T12P", "T6P"), alpha=0.01) %>% 
+    as.data.frame() %>% filter(padj <= 0.05) 
+summary(results(dds_new, contrast=c("diel_time", "T12P", "T6P"), alpha=0.01))
+
+nightfall_sig<- results(dds_new, contrast=c("diel_time", "T6P", "T12A"), alpha=0.01) %>% 
+  as.data.frame() %>% filter(padj <= 0.05)
+summary(results(dds_new, contrast=c("diel_time", "T6P", "T12A"), alpha=0.01))
+
+
+#Define significant genes
+night_sig_go_up <- night_sig %>% filter(log2FoldChange>0.58) %>% rownames(.) %>% as.character()
+night_sig_go_down <- nightfall_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.) %>% as.character()
+night_sig_go <- c(night_sig_go_up, night_sig_go_down)
+
+daybreak_sig_go_up <- daybreak_sig %>% filter(log2FoldChange>0.58) %>% rownames(.) %>% as.character()
+daybreak_sig_go_down <- night_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.) %>% as.character()
+daybreak_sig_go <- c(daybreak_sig_go_up, daybreak_sig_go_down)
+
+day_sig_go_up <- day_sig %>% filter(log2FoldChange>0.58) %>% rownames(.)  %>% as.character()
+day_sig_go_down <- daybreak_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.)  %>% as.character()
+day_sig_go <- c(day_sig_go_up, day_sig_go_down)
+
+nightfall_sig_go_up <- nightfall_sig %>% filter(log2FoldChange>0.58) %>% rownames(.) %>% as.character()
+nightfall_sig_go_down <- day_sig %>% filter(log2FoldChange<(-0.58)) %>% rownames(.) %>% as.character()
+nightfall_sig_go <- c(nightfall_sig_go_up, nightfall_sig_go_down)
+
+#annotate significant genes with KEGGS
+night_kegg <- as.data.frame(night_sig_go) %>%
+  dplyr::rename(gene_id = night_sig_go) %>%  # Rename the column to gene_id
+  inner_join(emap, by = "gene_id") %>%
+  dplyr::select(gene_id, Preferred_name, KEGG_Pathway, KEGG_ko)
+
+daybreak_kegg <- as.data.frame(daybreak_sig_go) %>%
+  dplyr::rename(gene_id = daybreak_sig_go) %>%  # Rename the column to gene_id
+  inner_join(emap, by = "gene_id") %>%
+  dplyr::select(gene_id, Preferred_name, KEGG_Pathway, KEGG_ko)
+
+day_kegg <- as.data.frame(day_sig_go) %>%
+  dplyr::rename(gene_id = day_sig_go) %>%  # Rename the column to gene_id
+  inner_join(emap, by = "gene_id") %>%
+  dplyr::select(gene_id, Preferred_name, KEGG_Pathway, KEGG_ko)
+
+nightfall_kegg <- as.data.frame(nightfall_sig_go) %>%
+  dplyr::rename(gene_id = nightfall_sig_go) %>%  # Rename the column to gene_id
+  inner_join(emap, by = "gene_id") %>%
+  dplyr::select(gene_id, Preferred_name, KEGG_Pathway, KEGG_ko)
+
+#Create matrices that only have KEGGs and extract .txt files
+night_symb_kegg_kos <- night_kegg %>% dplyr::select(gene_id, KEGG_ko) %>%
+  separate_rows(., KEGG_ko, sep=",") %>%
+  mutate(KEGG_ko=str_remove(KEGG_ko,"ko:")) %>% 
+  dplyr::filter(KEGG_ko != "-") %>%
+  write.csv(., "/path/to/data/analysis/pstr_rnaseq_diel/night_symb_kegg_kos.txt")
+
+daybreak_symb_kegg_kos <- daybreak_kegg %>% dplyr::select(gene_id, KEGG_ko) %>%
+  separate_rows(., KEGG_ko, sep=",") %>%
+  mutate(KEGG_ko=str_remove(KEGG_ko,"ko:")) %>% 
+  dplyr::filter(KEGG_ko != "-") %>%
+  write.csv(., "/path/to/data/analysis/pstr_rnaseq_diel/daybreak_symb_kegg_kos.txt")
+
+day_symb_kegg_kos <- day_kegg %>% dplyr::select(gene_id, KEGG_ko) %>%
+  separate_rows(., KEGG_ko, sep=",") %>%
+  mutate(KEGG_ko=str_remove(KEGG_ko,"ko:")) %>% 
+  dplyr::filter(KEGG_ko != "-") %>%
+  write.csv(., "/path/to/data/analysis/pstr_rnaseq_diel/day_symb_kegg_kos.txt")
+
+nightfall_symb_kegg_kos <- nightfall_kegg %>% dplyr::select(gene_id, KEGG_ko) %>%
+  separate_rows(., KEGG_ko, sep=",") %>%
+  mutate(KEGG_ko=str_remove(KEGG_ko,"ko:")) %>% 
+  dplyr::filter(KEGG_ko != "-") %>%
+  write.csv(., "/path/to/data/analysis/pstr_rnaseq_diel/nightfall_symb_kegg_kos.txt")
+```
+
+#ClusterProfiler
+```{r}
+# Helper function to extract KOs and run enrichment
+run_kegg_enrichment <- function(df, timepoint_name) {
+  # Drop NA and get unique KOs
+  ko_list <- df %>% filter(!is.na(KEGG_ko)) %>% pull(KEGG_ko) %>% unique()
+
+  # KEGG enrichment (organism = "ko" for KO identifiers)
+  enrichKEGG(gene = ko_list,
+             organism = "ko",
+             keyType = "kegg",
+             pvalueCutoff = 0.05,
+             qvalueCutoff = 0.2) %>%
+    mutate(Timepoint = timepoint_name)  # add timepoint label
+}
+
+# Run for each timepoint
+ekegg_night      <- run_kegg_enrichment(night_symb_kegg_kos, "12am")
+ekegg_daybreak   <- run_kegg_enrichment(daybreak_symb_kegg_kos, "6am")
+ekegg_day        <- run_kegg_enrichment(day_symb_kegg_kos, "12pm")
+ekegg_nightfall  <- run_kegg_enrichment(nightfall_symb_kegg_kos, "6pm")
+
+```
+
+#everything
+```{r}
+# Combine all enrichment results
+ekegg_all <- dplyr::bind_rows(
+  ekegg_night@result  %>% mutate(Timepoint = "12am"),
+  ekegg_daybreak@result %>% mutate(Timepoint = "6am"),
+  ekegg_day@result %>% mutate(Timepoint = "12pm"),
+  ekegg_nightfall@result %>% mutate(Timepoint = "6pm")
+)
+
+# Remove row names
+rownames(ekegg_all) <- NULL
+
+# Optionally: if you want cleaner pathway names
+ekegg_all$Description <- stringr::str_wrap(ekegg_all$Description, width = 40)
+
+
+# Custom colors for timepoints
+timepoint_colors <- c(
+  "12am" = "midnightblue",
+  "6am"  = "slategray",
+  "12pm" = "gold",
+  "6pm"  = "orange"
+)
+
+# Create the plot
+logpval_all<- ekegg_all %>%
+  group_by(Timepoint) %>%
+  slice_min(p.adjust, n = 10, with_ties = FALSE) %>%
+  #filter(-log10(p.adjust) > 0.55) %>%
+  ungroup() %>%
+  ggplot(aes(x = -log10(p.adjust),
+             y = fct_reorder(Description, p.adjust),
+             color = Timepoint)) +
+  geom_point(size = 3) +
+  facet_wrap(~ Timepoint, scales = "free", ncol = 2) +  # 1 column layout for cleaner stacking
+  scale_color_manual(values = timepoint_colors) +
+  labs(x = expression(-log[10]~"(adj. p-value)"),
+       y = "KEGG Pathway",
+       title = "Top Enriched KEGG Pathways by Timepoint") +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 12),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_dotplot_symb_all.pdf", width = 10, height = 8)
+logpval_all
+dev.off()
+```
+
+#metabolism
+```{r}
+# Combine all enrichment results
+ekegg_all <- dplyr::bind_rows(
+  ekegg_night@result  %>% mutate(Timepoint = "12am"),
+  ekegg_daybreak@result %>% mutate(Timepoint = "6am"),
+  ekegg_day@result %>% mutate(Timepoint = "12pm"),
+  ekegg_nightfall@result %>% mutate(Timepoint = "6pm")
+)
+
+# Remove row names
+rownames(ekegg_all) <- NULL
+
+# Optionally: if you want cleaner pathway names
+ekegg_all$Description <- stringr::str_wrap(ekegg_all$Description, width = 40)
+
+
+# Custom colors for timepoints
+timepoint_colors <- c(
+  "12am" = "midnightblue",
+  "6am"  = "slategray",
+  "12pm" = "gold",
+  "6pm"  = "orange"
+)
+ekegg_all_filtered <- ekegg_all %>%
+  filter(category == "Metabolism")
+
+# Set the Timepoint factor levels in desired order
+ekegg_all_filtered$Timepoint <- factor(ekegg_all_filtered$Timepoint,
+                                       levels = c("12am", "6am", "12pm", "6pm"))
+
+# Create the plot with updated ordering
+logpval_metab<- ekegg_all_filtered %>%
+  group_by(Timepoint) %>%
+  slice_min(p.adjust, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  ggplot(aes(x = -log10(p.adjust),
+             y = fct_reorder(Description, p.adjust),
+             color = Timepoint)) +
+  geom_point(size = 3) +
+  facet_wrap(~ Timepoint, scales = "free", ncol = 2) +
+  scale_color_manual(values = timepoint_colors) +
+  labs(x = expression(-log[10]~"(adj. p-value)"),
+       y = "KEGG Pathway",
+       title = "Top Enriched KEGG Pathways by Timepoint") +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 12),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_dotplot_symb_metabolism.pdf", width = 10, height = 8)
+logpval_metab
+dev.off()
+```
+
+#All but human disease
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+
+# Combine all enrichment results
+ekegg_all <- dplyr::bind_rows(
+  ekegg_night@result  %>% mutate(Timepoint = "12am"),
+  ekegg_daybreak@result %>% mutate(Timepoint = "6am"),
+  ekegg_day@result %>% mutate(Timepoint = "12pm"),
+  ekegg_nightfall@result %>% mutate(Timepoint = "6pm")
+)
+
+ekegg_all_filtered <- ekegg_all %>%
+  filter(category != "Human Diseases")
+
+# Define the desired timepoint order
+timepoint_levels <- c("12am", "6am", "12pm", "6pm")
+
+logpval_allinone_nodisease <- ekegg_all_filtered %>%
+  filter(-log10(p.adjust) > 0.55) %>%
+  group_by(Timepoint) %>%
+  slice_min(p.adjust, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(Timepoint = factor(Timepoint, levels = timepoint_levels)) %>%
+  arrange(Timepoint, p.adjust) %>%  # order data by timepoint then p-value
+  mutate(pathway_label = paste(Timepoint, Description, sep = " - "),
+         pathway_label = factor(pathway_label, levels = rev(unique(pathway_label)))) %>%
+  ggplot(aes(x = -log10(p.adjust), 
+             y = pathway_label,
+             color = Timepoint)) +
+  geom_point(size = 3, alpha = 0.9) +
+  scale_color_manual(values = c("12am" = "midnightblue",
+                                "6am" = "slategray",
+                                "12pm" = "gold",
+                                "6pm" = "orange")) +
+  labs(x = expression(-log[10]~"(adj. p-value)"),
+       y = "KEGG Pathway (Grouped by Timepoint)",
+       title = "Top Enriched KEGG Pathways Across Diel Phases") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right",
+        axis.text.y = element_text(size = 9))
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_dotplot_symb_allinone_nodisease_noties.pdf", width =8, height = 8)
+logpval_allinone_nodisease
+dev.off()
+```
+
+```{r}
+# Combine all enrichment results
+ekegg_all <- dplyr::bind_rows(
+  ekegg_night@result  %>% mutate(Timepoint = "12am"),
+  ekegg_daybreak@result %>% mutate(Timepoint = "6am"),
+  ekegg_day@result %>% mutate(Timepoint = "12pm"),
+  ekegg_nightfall@result %>% mutate(Timepoint = "6pm")
+)
+
+ekegg_all %>%
+  filter(-log10(p.adjust) > 0.55) %>%
+  group_by(Timepoint) %>%
+  slice_min(p.adjust, n = 10) %>%
+  ungroup() %>%
+  ggplot(aes(x = -log10(p.adjust), 
+             y = fct_reorder(Description, p.adjust),
+             color = Timepoint)) +
+  geom_point(size = 3, alpha = 0.9) +
+  scale_color_manual(values = c("12am" = "midnightblue",
+                                "6am" = "slategray",
+                                "12pm" = "gold",
+                                "6pm" = "orange")) +
+  labs(x = expression(-log[10]~"(adj. p-value)"),
+       y = "KEGG Pathway",
+       title = "Top Enriched KEGG Pathways Across Timepoints") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+
+# Combine all enrichment results
+ekegg_all <- dplyr::bind_rows(
+  ekegg_night@result  %>% mutate(Timepoint = "12am"),
+  ekegg_daybreak@result %>% mutate(Timepoint = "6am"),
+  ekegg_day@result %>% mutate(Timepoint = "12pm"),
+  ekegg_nightfall@result %>% mutate(Timepoint = "6pm")
+)
+
+# Define the desired timepoint order
+timepoint_levels <- c("12am", "6am", "12pm", "6pm")
+
+logpval_allinone <- ekegg_all %>%
+  filter(-log10(p.adjust) > 0.55) %>%
+  group_by(Timepoint) %>%
+  slice_min(p.adjust, n = 10) %>%
+  ungroup() %>%
+  mutate(Timepoint = factor(Timepoint, levels = timepoint_levels)) %>%
+  arrange(Timepoint, p.adjust) %>%  # order data by timepoint then p-value
+  mutate(pathway_label = paste(Timepoint, Description, sep = " - "),
+         pathway_label = factor(pathway_label, levels = rev(unique(pathway_label)))) %>%
+  ggplot(aes(x = -log10(p.adjust), 
+             y = pathway_label,
+             color = Timepoint)) +
+  geom_point(size = 3, alpha = 0.9) +
+  scale_color_manual(values = c("12am" = "midnightblue",
+                                "6am" = "slategray",
+                                "12pm" = "gold",
+                                "6pm" = "orange")) +
+  labs(x = expression(-log[10]~"(adj. p-value)"),
+       y = "KEGG Pathway (Grouped by Timepoint)",
+       title = "Top Enriched KEGG Pathways Across Diel Phases") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right",
+        axis.text.y = element_text(size = 9))
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_dotplot_symb_allinone.pdf", width =8, height = 10)
+logpval_allinone
+dev.off()
+```
+
+```{r}
+# Step 1: Create unique labels
+ekegg_top10_metabolism <- ekegg_top10_metabolism %>%
+  mutate(Description_unique = paste0(Description, " (", Timepoint, ")"))
+
+# Step 2: Define custom factor levels, sorted by subcategory and adjusted p-value
+custom_levels <- ekegg_top10_metabolism %>%
+  arrange(subcategory, p.adjust) %>%
+  pull(Description_unique)
+
+# Step 3: Convert to a factor using those levels
+ekegg_top10_metabolism <- ekegg_top10_metabolism %>%
+  mutate(Description_unique = factor(Description_unique, levels = custom_levels))
+
+
+ggplot(ekegg_top10_metabolism, aes(x = Timepoint, y = Description_unique)) +
+  geom_point(aes(color = -log10(p.adjust)), size = 4) +  # remove RichFactor temporarily
+  facet_grid(subcategory ~ ., scales = "free_y", space = "free_y") +
+  theme_bw() +
+  labs(
+    y = "KEGG Pathway",
+    x = "Timepoint",
+    color = "-log10(p.adjust)",
+    size = "RichFactor",
+    title = "Metabolism KEGG Pathways Grouped by Subcategory"
+  )
+
+```
+
+#SANKEY NO HUMAN DISEASE
+```{r}
+ekegg_all_filtered <- ekegg_all %>%
+  filter(category != "Human Diseases")
+
+# Filter for significant pathways
+sankey_df <- ekegg_all_filtered %>%
+  filter(p.adjust < 0.2) %>%
+  count(Timepoint, category, Description)  # Each pathway gets 1 "count"
+
+# Optionally assign colors per timepoint
+timepoint_colors <- c("12am" = "midnightblue",
+                      "6am" = "slategray",
+                      "12pm" = "gold",
+                      "6pm" = "orange")
+
+sankey_nodisease <- 
+       ggplot(sankey_df,
+       aes(axis1 = Timepoint,
+           axis2 = category,
+           axis3 = Description,
+           y = n)) +
+  scale_x_discrete(limits = c("Timepoint", "Category", "Pathway"), expand = c(.1, .05)) +
+  geom_alluvium(aes(fill = Timepoint), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "gray90", color = "gray50") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3, hjust = 0) +
+  scale_fill_manual(values = timepoint_colors) +
+  theme_minimal(base_size = 13) +
+  ggtitle("KEGG Pathway Flow Across Diel Timepoints") +
+  theme(legend.position = "bottom")
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_symb_nodisease.pdf", width = 16, height = 12)
+sankey_nodisease
+dev.off()
+```
+
+#SANKEY METABOLISM
+```{r}
+ekegg_all_filtered <- ekegg_all %>%
+  filter(category == "Metabolism")
+
+# Filter for significant pathways
+sankey_df <- ekegg_all_filtered %>%
+  filter(p.adjust < 0.3) %>%
+  count(Timepoint, category, Description)  # Each pathway gets 1 "count"
+
+# Optionally assign colors per timepoint
+timepoint_colors <- c("12am" = "midnightblue",
+                      "6am" = "slategray",
+                      "12pm" = "gold",
+                      "6pm" = "orange")
+
+# Filter for metabolic pathways and significant p.adjust
+sankey_df <- ekegg_all %>%
+  filter(category == "Metabolism", p.adjust < 0.25) %>%
+  count(Timepoint, subcategory, Description)
+
+# Generate Sankey plot using subcategory
+sankey_metab <- ggplot(sankey_df,
+       aes(axis1 = Timepoint,
+           axis2 = subcategory,
+           axis3 = Description,
+           y = n)) +
+  scale_x_discrete(limits = c("Timepoint", "Subcategory", "Pathway"), expand = c(.1, .05)) +
+  geom_alluvium(aes(fill = Timepoint), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "gray90", color = "gray50") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3, hjust = 0) +
+  scale_fill_manual(values = timepoint_colors) +
+  theme_minimal(base_size = 13) +
+  ggtitle("Metabolic Pathway Flow Across Diel Timepoints") +
+  theme(legend.position = "bottom")
+
+# Save to PDF
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_symb_metab_by_subcategory.pdf", width = 16, height = 12)
+sankey_metab
+dev.off()
+
+```
+
+
+```{r}
+library(dplyr)
+library(networkD3)
+
+ekegg_all <- dplyr::bind_rows(
+  ekegg_night@result  %>% mutate(Timepoint = "12am"),
+  ekegg_daybreak@result %>% mutate(Timepoint = "6am"),
+  ekegg_day@result %>% mutate(Timepoint = "12pm"),
+  ekegg_nightfall@result %>% mutate(Timepoint = "6pm")
+)
+
+# Define diel color palette
+diel_kegg_colours <- c(
+  "12am" = "midnightblue",
+  "6am" = "slategray",
+  "12pm" = "gold",
+  "6pm" = "orange"
+)
+
+# Step 1: Filter enriched pathways (remove human disease & retain significance)
+sankey_df <- ekegg_all %>%
+  #filter(category == "Metabolism", p.adjust < 0.05) %>%
+  filter(category == "Metabolism") %>%
+  group_by(Timepoint, subcategory) %>%
+  summarize(
+    Score = -log10(min(p.adjust)),  # enrichment strength
+    .groups = "drop"
+  ) %>%
+  rename(Function = subcategory)
+
+# Step 2: Order nodes (functions first, then diel timepoints in logical order)
+ordered_timepoints <- c("12am", "6am", "12pm", "6pm")
+function_nodes <- sort(unique(sankey_df$Function))
+
+nodes <- data.frame(
+  name = c(function_nodes, ordered_timepoints),
+  group = c(rep("Function", length(function_nodes)), ordered_timepoints)
+)
+
+# Step 3: Create Sankey links
+links <- sankey_df %>%
+  mutate(
+    source = match(Function, nodes$name) - 1,
+    target = match(Timepoint, nodes$name) - 1,
+    value = Score,
+    group = Timepoint  # assign color to flows
+  ) %>%
+  select(source, target, value, group)
+
+# Step 4: Define color scale (JS-friendly)
+color_scale <- 'd3.scaleOrdinal()
+  .domain(["12am", "6am", "12pm", "6pm", "Function"])
+  .range(["midnightblue", "slategray", "gold", "orange", "gray"])'
+
+# Step 5: Plot the Sankey
+sankeynet_metab <- sankeyNetwork(
+  Links = links,
+  Nodes = nodes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  NodeGroup = "group",
+  LinkGroup = "group",
+  sinksRight = FALSE,
+  fontSize = 12,
+  nodeWidth = 30,
+  colourScale = color_scale
+)
+
+library(htmlwidgets)
+saveWidget(sankeynet_metab, "/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_narrative_symb_metabolism.html", selfcontained = TRUE)
+webshot("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_narrative_symb_metabolism.html", "/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_narrative_symb_metabolism.png", vwidth = 1000, vheight = 800)
+
+```
+
+#genetic information processing
+```{r}
+library(dplyr)
+
+
+# Define diel color palette
+diel_kegg_colours <- c(
+  "12am" = "midnightblue",
+  "6am" = "slategray",
+  "12pm" = "gold",
+  "6pm" = "orange"
+)
+
+# Step 1: Filter enriched pathways (remove human disease & retain significance)
+sankey_df <- ekegg_all %>%
+  #filter(category == "Genetic Information Processing", p.adjust < 0.05) %>%
+  filter(category == "Genetic Information Processing") %>%
+  group_by(Timepoint, subcategory) %>%
+  summarize(
+    Score = -log10(min(p.adjust)),  # enrichment strength
+    .groups = "drop"
+  ) %>%
+  rename(Function = subcategory)
+
+# Step 2: Order nodes (functions first, then diel timepoints in logical order)
+ordered_timepoints <- c("12am", "6am", "12pm", "6pm")
+function_nodes <- sort(unique(sankey_df$Function))
+
+nodes <- data.frame(
+  name = c(function_nodes, ordered_timepoints),
+  group = c(rep("Function", length(function_nodes)), ordered_timepoints)
+)
+
+# Step 3: Create Sankey links
+links <- sankey_df %>%
+  mutate(
+    source = match(Function, nodes$name) - 1,
+    target = match(Timepoint, nodes$name) - 1,
+    value = Score,
+    group = Timepoint  # assign color to flows
+  ) %>%
+  select(source, target, value, group)
+
+# Step 4: Define color scale (JS-friendly)
+color_scale <- 'd3.scaleOrdinal()
+  .domain(["12am", "6am", "12pm", "6pm", "Function"])
+  .range(["midnightblue", "slategray", "gold", "orange", "gray"])'
+
+# Step 5: Plot the Sankey
+sankeynet_gip <- sankeyNetwork(
+  Links = links,
+  Nodes = nodes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  NodeGroup = "group",
+  LinkGroup = "group",
+  sinksRight = TRUE,
+  fontSize = 12,
+  nodeWidth = 30,
+  colourScale = color_scale
+)
+
+saveWidget(sankeynet_gip, "/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_narrative_symb_Genetic_Information_Processing.html", selfcontained = TRUE)
+webshot("/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_narrative_symb_Genetic Information_Processing.html", "/path/to/data/analysis/pstr_rnaseq_diel/KEGG_Pathway_sankey_narrative_symb_Genetic_Information_Processing.png", vwidth = 1000, vheight = 800)
+
+```
+
+
+###################################################################################################
+####################                      Rhythmicity                          ####################
+###################################################################################################
+
+###################################################################################################
+####################                        LimoRhyde                          ####################
+###################################################################################################
+
+```{r}
+counts_df <- as.matrix(counts_df)
+
+counts_log <- log(counts_df+1)
+
+
+##get median expression at each diel_timepoint of rhythmic genes
+test <- counts_log[rhythmic,] %>% as.data.frame() %>%
+  rownames_to_column("tx") %>%
+  pivot_longer(cols = -tx, names_to = "sample_id", values_to = "clog") %>% #clog is log scale of counts
+  inner_join(meta3 %>% dplyr::select(diel_time_num, sample_id)) %>%
+  group_by(diel_time_num, tx) %>%
+  dplyr::summarise(median_clog = median(clog)) %>%
+  pivot_wider(id_cols = tx, names_from = diel_time_num, values_from = median_clog) %>%
+  column_to_rownames("tx") %>%
+  as.matrix()
+
+##calculate which rhythmic genes have a log2 fold change between max and min median expression, ie log2 amplitude > 1
+l2fc_pass <- (log(rowMaxs(test),2) - log(rowMins(test),2)) > 1
+l2fc_0.58_pass <- (log(rowMaxs(test),2) - log(rowMins(test),2)) > 0.58
+
+l2fc_pass[l2fc_pass==TRUE] %>% length()
+l2fc_0.58_pass[l2fc_0.58_pass==TRUE] %>% length()
+```
+
+
+```{r, fig.wdith = 12}
+#Set global variables for limma
+period = 24
+step = 6
+#qvalRhyCutoff = 0.15
+qvalRhyCutoff = 0.01
+qvalDrCutoff = 0.1
+
+#adjust metadata to contain cos and sin
+meta3 = cbind(meta3, limorhyde(meta3$diel_time_num, 'time_'))
+
+#rhythmic limma design
+rhyLimma = {
+  design = model.matrix(~ time_cos + time_sin, data = meta3)
+  fit = lmFit(counts_df[keep,], design)
+  fit = eBayes(fit, trend = TRUE)
+  rhyNow = data.table(topTable(fit, coef = 2:3, number = Inf), keep.rownames = TRUE)
+  setnames(rhyNow, 'rn', 'gene_id')}
+
+rhyLimmaSummary = rhyLimma[, .(P.Value = min(P.Value)), by = gene_id]
+rhyLimmaSummary[, adj.P.Val := p.adjust(P.Value, method = 'BH')]
+setorderv(rhyLimmaSummary, 'adj.P.Val')
+
+View(rhyLimma[1:5, ])
+
+```
+
+#Adjust for amplitude change and phase
+# AMPLITUDE **This line calculates the amplitude of the rhythmic oscillation for each gene.**
+```{r}
+#The amplitude measures the magnitude of the oscillation, calculated as the Euclidean distance (hypotenuse) using the sine and cosine values: 
+#{amplitude} = sqrt{({time_cos})^2 + ({time_sin})^2}
+#This gives the "strength" or size of the rhythmic signal, regardless of its phase (timing).
+rhyLimma[, amplitude := sqrt((time_cos^2) + (time_sin^2))]
+```
+
+# PHASE **This line calculates the phase, or the time of peak expression, for each gene.**
+```{r}
+#atan2(time_sin, time_cos) calculates the angle (in radians) of the oscillation, based on the sine and cosine values. This angle corresponds to the phase of the rhythmic pattern.The multiplication by (24/(2π)) converts the angle (which is in radians) to hours in a 24-hour cycle: 
+#{phase (in hours)} = {atan2}({time_sin}, {time_cos}) * (24 / (2 * pi))}
+
+rhyLimma[, phase := atan2(time_sin, time_cos) * (24 / (2 * pi))]
+
+#Need to correct for negative values
+#By default, atan2 can return negative values (phases), which correspond to times before midnight in a circular context.
+#Adding 24 to negative phases shifts them into the range of 0 to 24 hours, making them easier to interpret in the context of a daily cycle.
+
+rhyLimma[phase < 0, phase := phase + 24]  
+```
+
+#Hard code for plot development
+```{r}
+plot_period <- function(x){
+  name <- x
+  dat <- data.frame(count = counts_df[x, ])
+  dat <- cbind(dat, meta3 %>% dplyr::select(diel_time_num, true_time, day))
+  
+  dat_mean <- dat %>% 
+    group_by(true_time) %>%
+    dplyr::summarise(count = median(count), 
+                     true_time = median(true_time), 
+                     diel_time_num = mean(diel_time_num))
+  
+  dat_mean_small <- dat %>% 
+    group_by(diel_time_num) %>%
+    dplyr::summarise(count = median(count), 
+                     diel_time_num = mean(diel_time_num))
+
+  rects <- data.frame(
+    xmin = seq(-3, 63, 6), 
+    xmax = seq(3, 69, 6), 
+    ymin = rep(-Inf, 12), 
+    ymax = rep(Inf, 12),
+    fill = factor(rep(c("12AM", "6AM", "12PM", "6PM"), 3), 
+                  levels = c("12AM", "6AM", "12PM", "6PM"))
+  )
+  
+  a <- ggplot(dat, aes(x = true_time, y = count, group = true_time)) +
+    geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = dat_mean, aes(x = true_time, y = count), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0, 72, 6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue", "6AM"="slategray", "12PM"="gold", "6PM"="orange")) +
+    labs(x = "Time (h)", y = "Expression (raw counts)", title = name) +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3, 69))
+  
+  b <- ggplot(dat, aes(x = diel_time_num, y = count, group = diel_time_num)) +
+    geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = dat_mean_small, aes(x = diel_time_num, y = count), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0, 72, 6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue", "6AM"="slategray", "12PM"="gold", "6PM"="orange")) +
+    labs(x = "Time (h)", y = "Expression (raw counts)", title = name) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    coord_cartesian(xlim = c(-3, 21))
+  
+  cowplot::plot_grid(plotlist = list(a, b), rel_widths = c(0.7, 0.3))
+}
+
+
+```
+
+#TESTING NEW PLOT PERIOD WITH GO TERMS
+```{r}
+plot_period <- function(x){
+  name <- x
+  
+  # Pull GO description for the gene from emap
+  go_info <- emap %>% filter(gene_id == x) %>% 
+    select(eggNOG.free.text.desc.) %>% 
+    distinct()
+  
+  # Set up title
+  if (nrow(go_info) > 0) {
+    title_text <- paste0(name, " - ", go_info$eggNOG.free.text.desc.[1])
+  } else {
+    title_text <- name  # fallback to just gene name if no GO info
+  }
+  
+  dat <- data.frame(count = counts_df[x, ])
+  dat <- cbind(dat, meta3 %>% dplyr::select(diel_time_num, true_time, day))
+  
+  dat_mean <- dat %>% 
+    group_by(true_time) %>%
+    dplyr::summarise(count = median(count), 
+                     true_time = median(true_time), 
+                     diel_time_num = mean(diel_time_num))
+  
+  dat_mean_small <- dat %>% 
+    group_by(diel_time_num) %>%
+    dplyr::summarise(count = median(count), 
+                     diel_time_num = mean(diel_time_num))
+
+  rects <- data.frame(
+    xmin = seq(-3, 63, 6), 
+    xmax = seq(3, 69, 6), 
+    ymin = rep(-Inf, 12), 
+    ymax = rep(Inf, 12),
+    fill = factor(rep(c("12AM", "6AM", "12PM", "6PM"), 3), 
+                  levels = c("12AM", "6AM", "12PM", "6PM"))
+  )
+  
+  a <- ggplot(dat, aes(x = true_time, y = count, group = true_time)) +
+    geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = dat_mean, aes(x = true_time, y = count), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0, 72, 6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue", "6AM"="slategray", "12PM"="gold", "6PM"="orange")) +
+    labs(x = "Time (h)", y = "Expression (raw counts)", title = title_text) +
+    theme_classic() +
+    theme(legend.position = "bottom") +
+    coord_cartesian(xlim = c(-3, 69))
+  
+  b <- ggplot(dat, aes(x = diel_time_num, y = count, group = diel_time_num)) +
+    geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = fill), inherit.aes = FALSE, alpha = 0.5) +
+    geom_boxplot() +
+    geom_point() +
+    geom_line(data = dat_mean_small, aes(x = diel_time_num, y = count), inherit.aes = FALSE) +
+    scale_x_continuous(breaks = seq(0, 72, 6)) +
+    scale_fill_manual(values = c("12AM"="midnightblue", "6AM"="slategray", "12PM"="gold", "6PM"="orange")) +
+    labs(x = "Time (h)", y = "Expression (raw counts)", title = NULL) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    coord_cartesian(xlim = c(-3, 21))
+  
+  cowplot::plot_grid(plotlist = list(a, b), rel_widths = c(0.7, 0.3))
+}
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symbs_4x/timepoint_0_symbB.v1.2.026212.pdf", width =12, height = 7)
+plot_period("symbB.v1.2.026212")
+dev.off()
+
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symb_new/plots_12am/symbB.v1.2.039847.pdf", width =12, height = 7)
+plot_period("symbB.v1.2.039847")
+dev.off()
+```
+
+
+# LOOP TO GENERATE TIMEPOINT SPECIFIC GRAPHS 
+```{r}
+#Pull timepoint specific amplitude changes
+target_time <- 18
+tolerance <- 12  # Allow a 1-hour window around the target time
+amplitude_cutoff <- 4  # Adjust based on your data
+
+filtered_genes_amp <- rhyLimma[
+    amplitude > amplitude_cutoff & 
+    abs(phase - target_time) <= tolerance
+]
+
+#Loop it all together
+target_times <- c(0, 6, 12, 18)
+
+# Loop through each target time and create separate vectors
+for (time in target_times) {
+  filtered_genes <- rhyLimma[
+    amplitude > amplitude_cutoff & 
+    abs(phase - time) <= tolerance
+  ]
+  
+  # Assign each vector to a variable named after the timepoint
+  assign(paste0("genes_", time), filtered_genes$gene_id)
+}
+
+#Create plots containing these gene lists for visuals
+# Define the timepoints and the variables to loop through
+timepoints <- c(0, 6, 12, 18)
+
+# Directory to save the plots
+output_directory <- "/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symbs_4x/"
+
+# Loop through each timepoint
+for (time in timepoints) {
+  # Get the list of genes for the current timepoint
+  genes <- get(paste0("genes_", time))
+  
+  # Loop through each gene in the list
+  for (gene_id in genes) {
+    # Construct the file name
+    file_name <- paste0(output_directory, "timepoint_", time, "_", gene_id, ".pdf")
+    
+    # Generate the plot for the gene
+    plot <- plot_period(gene_id)  # Assuming `plot_period` generates the desired plot object
+    
+    # Save the plot as a PDF
+    ggsave(filename = file_name, plot = plot, device = "pdf", width = 12, height = 7)
+  }
+}
+
+```
+
+```{r}
+# Pull genes that have a real eggNOG description
+described_genes <- emap %>%
+  filter(
+    !is.na(eggNOG.free.text.desc.), 
+    eggNOG.free.text.desc. != "",
+    taxonomic.scope %in% c("Eukaryota", "", NA)  # keep Eukaryota, empty, or NA
+  ) %>%
+  pull(gene_id)
+
+
+# Define your parameters
+target_times <- c(0, 6, 12, 18)
+tolerance <- 12
+amplitude_cutoff <- 4
+
+# Loop through each target time and create separate gene lists
+for (time in target_times) {
+  filtered_genes <- rhyLimma[
+    amplitude > amplitude_cutoff & 
+    abs(phase - time) <= tolerance &
+    gene_id %in% described_genes
+  ]
+  
+  assign(paste0("genes_", time), filtered_genes$gene_id)
+}
+
+# Define output directory
+output_directory <- "/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symbs_4x/"
+
+# Plot and save
+for (time in target_times) {
+  genes <- get(paste0("genes_", time))
+  
+  for (gene_id in genes) {
+    file_name <- paste0(output_directory, "timepoint_", time, "_", gene_id, ".pdf")
+    plot <- plot_period(gene_id)
+    ggsave(filename = file_name, plot = plot, device = "pdf", width = 12, height = 7)
+  }
+}
+
+
+```
+
+#Attempt at refining the selection of rhthmic genes
+```{r}
+# Function to check consistent peak expression across days
+consistent_peak <- function(gene_id, time_var = "true_time", target = 18, tolerance = 1) {
+  gene_expr <- counts_df[gene_id, ]
+  dat <- data.frame(expr = as.numeric(gene_expr), meta3)
+  
+  # Group by day and find expression at target time vs other times
+  dat_summary <- dat %>%
+    mutate(within_window = abs(!!sym(time_var) - target) <= tolerance) %>%
+    group_by(day, within_window) %>%
+    summarize(med_expr = median(expr), .groups = "drop") %>%
+    pivot_wider(names_from = within_window, values_from = med_expr, names_prefix = "window_")
+
+  # Check that expression at the target time ("TRUE") is higher than all others ("FALSE") across all days
+  all(dat_summary$window_TRUE > dat_summary$window_FALSE, na.rm = TRUE)
+}
+
+# New filtering step
+target_times <- c(0, 6, 12, 18)
+amplitude_cutoff <- 3
+tolerance <- 1
+
+for (time in target_times) {
+  filtered <- rhyLimma[
+    amplitude > amplitude_cutoff & 
+    abs(phase - time) <= tolerance
+  ]
+  
+  consistent_genes <- filtered$gene_id[
+    sapply(filtered$gene_id, consistent_peak, target = time)
+  ]
+  
+  assign(paste0("genes_", time), consistent_genes)
+}
+
+#Create plots containing these gene lists for visuals
+# Define the timepoints and the variables to loop through
+timepoints <- c(0, 6, 12, 18)
+
+# Directory to save the plots
+output_directory <- "/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symbs_refined/"
+
+# Loop through each timepoint
+for (time in timepoints) {
+  # Get the list of genes for the current timepoint
+  genes <- get(paste0("genes_", time))
+  
+  # Loop through each gene in the list
+  for (gene_id in genes) {
+    # Construct the file name
+    file_name <- paste0(output_directory, "timepoint_", time, "_", gene_id, ".pdf")
+    
+    # Generate the plot for the gene
+    plot <- plot_period(gene_id)  # Assuming `plot_period` generates the desired plot object
+    
+    # Save the plot as a PDF
+    ggsave(filename = file_name, plot = plot, device = "pdf", width = 12, height = 7)
+  }
+}
+
+```
+
+#Trial for new method to identify specific peak genes
+```{r}
+vst_expr<- vst(dds)
+vst_mat <- assay(vst_expr)  # Extract the matrix
+
+
+# How many pass each individually?
+sum(rhyLimma$adj.P.Val < 0.05)
+sum(rhyLimma$amplitude > 2)
+
+# After computing phase:
+rhy_phase <- rhyLimma %>%
+  mutate(phase_hour = (atan2(time_sin, time_cos) %% (2 * pi)) * 24 / (2 * pi))
+
+hist(rhy_phase$phase_hour)  # Visualize distribution
+sum(abs(rhy_phase$phase_hour - 6) <= 2)
+
+
+
+rhy_filtered <- rhyLimma %>%
+  mutate(phase_hour = (atan2(time_sin, time_cos) %% (2 * pi)) * 24 / (2 * pi)) %>%
+  filter(adj.P.Val < 0.05, amplitude > 2, abs(phase_hour - 6) <= 2)
+
+# Optional: confirm expression highest at 6am from timepoint means
+confirmed_6am_genes <- vst_mat %>%
+  as.data.frame() %>%
+  rownames_to_column("gene") %>%
+  filter(gene %in% rhy_filtered$gene) %>%
+  pivot_longer(-gene, names_to = "sample", values_to = "expr") %>%
+  left_join(meta3, by = c("sample" = "sample_id")) %>%
+  group_by(gene, diel_time) %>%
+  summarise(mean_expr = mean(expr), .groups = "drop") %>%
+  group_by(gene) %>%
+  filter(mean_expr == max(mean_expr)) %>%
+  filter(diel_time == "6am") %>%
+  pull(gene)
+
+
+```
+
+```{r}
+dds_raw <- DESeqDataSetFromTximport(txi=txi, 
+                              colData=meta3_new, 
+                              design=~diel_day + diel_time)
+dds_raw <- dds_raw[keep_new]
+
+vst_expr<- vst(dds_raw)
+vst_mat <- assay(vst_expr)  # Extract the matrix
+
+
+library(dplyr)
+library(tidyr)
+
+# 1. Convert VST matrix to long format
+vst_long <- vst_mat %>%
+  as.data.frame() %>%
+  rownames_to_column("gene") %>%
+  pivot_longer(
+    cols = -gene,
+    names_to = "sample",
+    values_to = "expr"
+  )
+
+# 2. Join with metadata (assumes meta3 has `sample_id`)
+vst_joined <- vst_long %>%
+  left_join(meta2, by = c("sample" = "sample_id"))
+
+```
+
+```{r}
+get_top_genes_at_time <- function(target_hour, diel_label, top_n = 100, window = 2) {
+  
+  # Step 1: Prepare rhythmic data
+  rhy_ranked <- rhyLimma %>%
+    mutate(
+      phase_hour = (atan2(time_sin, time_cos) %% (2 * pi)) * (24 / (2 * pi)),
+      amplitude = sqrt(time_sin^2 + time_cos^2)
+    ) %>%
+    filter(adj.P.Val < 0.05, abs(phase_hour - target_hour) <= window)
+
+  # Step 2: Confirm they peak at the expected diel time
+  peak_genes <- vst_joined %>%
+    filter(gene %in% rhy_ranked$gene_id) %>%
+    group_by(gene, diel_time) %>%
+    summarise(mean_expr = mean(expr, na.rm = TRUE), .groups = "drop") %>%
+    group_by(gene) %>%
+    filter(mean_expr == max(mean_expr, na.rm = TRUE)) %>%
+    filter(diel_time == diel_label) %>%
+    pull(gene)
+  
+  # Step 3: Subset rhy_ranked to peak genes and get top N by amplitude
+  top_genes <- rhy_ranked %>%
+    filter(gene_id %in% peak_genes) %>%
+    arrange(desc(amplitude)) %>%
+    slice_head(n = top_n) %>%
+    pull(gene_id)
+
+  return(top_genes)
+}
+
+
+top_6am   <- get_top_genes_at_time(6,   "T6A",  top_n = 100)
+top_12am  <- get_top_genes_at_time(0,   "T12A", top_n = 100)
+top_12pm  <- get_top_genes_at_time(12,  "T12P", top_n = 100)
+top_6pm   <- get_top_genes_at_time(18,  "T6P",  top_n = 100)
+
+
+# 1. Define output base directory
+output_base <- "/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symb_new/"  # <-- replace this with your desired parent folder
+
+# 2. Create a named list of gene sets by timepoint
+gene_sets <- list(
+  "6am"  = top_6am,
+  "12am" = top_12am,
+  "12pm" = top_12pm,
+  "6pm"  = top_6pm
+)
+
+# 3. Loop through each timepoint and save plots
+for (time_label in names(gene_sets)) {
+  
+  # Create subdirectory for the timepoint if it doesn't exist
+  output_dir <- file.path(output_base, paste0("plots_", time_label))
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+  
+  # Extract genes for this timepoint
+  genes <- gene_sets[[time_label]]
+  
+  # Loop through each gene and save plot
+  for (gene in genes) {
+    ggsave(
+      filename = file.path(output_dir, paste0(time_label, "_", gene, ".pdf")),
+      plot = plot_period(gene),
+      width = 12,
+      height = 7
+    )
+  }
+}
+
+
+```
+
+```{r}
+get_top_genes_at_time <- function(target_hour, diel_label, top_n = 100, window = 2) {
+  
+  # Step 1: Prepare rhythmic data
+  rhy_ranked <- rhyLimma %>%
+    mutate(
+      phase_hour = (atan2(time_sin, time_cos) %% (2 * pi)) * (24 / (2 * pi)),
+      amplitude = sqrt(time_sin^2 + time_cos^2)
+    ) %>%
+    filter(adj.P.Val < 0.05, abs(phase_hour - target_hour) <= window)
+
+  # Step 2: Confirm they peak at the expected diel time
+  peak_genes <- vst_joined %>%
+    filter(gene %in% rhy_ranked$gene_id) %>%
+    group_by(gene, diel_time) %>%
+    summarise(mean_expr = mean(expr, na.rm = TRUE), .groups = "drop") %>%
+    group_by(gene) %>%
+    filter(mean_expr == max(mean_expr, na.rm = TRUE)) %>%
+    filter(diel_time == diel_label) %>%
+    pull(gene)
+  
+  # Step 3: Subset rhy_ranked to peak genes and get top N by amplitude
+  top_genes <- rhy_ranked %>%
+    filter(gene_id %in% peak_genes) %>%
+    arrange(desc(amplitude)) %>%
+    slice_head(n = top_n) %>%
+    pull(gene_id)
+
+  return(top_genes)
+}
+
+
+top_6am   <- get_top_genes_at_time(6,   "T6A",  top_n = 100)
+top_12am  <- get_top_genes_at_time(0,   "T12A", top_n = 100)
+top_12pm  <- get_top_genes_at_time(12,  "T12P", top_n = 100)
+top_6pm   <- get_top_genes_at_time(18,  "T6P",  top_n = 100)
+
+
+described_genes <- emap %>%
+  filter(
+    !is.na(eggNOG.free.text.desc.), 
+    eggNOG.free.text.desc. != "",
+    GOs != "",
+    taxonomic.scope %in% c("Eukaryota", "", NA)  # keep Eukaryota, empty, or NA
+  ) %>%
+  pull(gene_id)
+
+
+# 1. Define output base directory
+output_base <- "/path/to/data/analysis/pstr_rnaseq_diel/rhythmic_symb_new_wGOs/"  # <-- replace this with your desired parent folder
+
+# 2. Create a named list of gene sets by timepoint
+gene_sets <- list(
+  "6am"  = top_6am,
+  "12am" = top_12am,
+  "12pm" = top_12pm,
+  "6pm"  = top_6pm
+)
+
+# 3. Loop through each timepoint and save plots
+for (time_label in names(gene_sets)) {
+  
+  output_dir <- file.path(output_base, paste0("plots_", time_label))
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+  
+  genes <- gene_sets[[time_label]]
+  
+  for (gene in genes) {
+    # Skip undescribed genes
+    if (!(gene %in% described_genes)) next
+    
+    # Lookup description
+    desc <- emap %>%
+      filter(gene_id == gene) %>%
+      pull(eggNOG.free.text.desc.) %>%
+      unique() %>%
+      .[1]  # Use the first if duplicates exist
+    
+    # Safely handle NA fallback
+    plot_title <- if (!is.na(desc) && desc != "") {
+      paste0(gene, " - ", desc)
+    } else {
+      gene
+    }
+    
+    # Generate and save plot
+    ggsave(
+      filename = file.path(output_dir, paste0(time_label, "_", gene, ".pdf")),
+      plot = plot_period(gene) + ggtitle(plot_title),
+      width = 12,
+      height = 7
+    )
+  }
+}
+
+
+
+# For 6am
+descriptions_6am <- emap %>%
+  filter(gene_id %in% top_6am) %>%
+  distinct(gene_id, eggNOG.free.text.desc.) %>%
+  arrange(eggNOG.free.text.desc.)
+
+# For 12am
+descriptions_12am <- emap %>%
+  filter(gene_id %in% top_12am) %>%
+  distinct(gene_id, eggNOG.free.text.desc.) %>%
+  arrange(eggNOG.free.text.desc.)
+
+# For 12pm
+descriptions_12pm <- emap %>%
+  filter(gene_id %in% top_12pm) %>%
+  distinct(gene_id, eggNOG.free.text.desc.) %>%
+  arrange(eggNOG.free.text.desc.)
+
+# For 6pm
+descriptions_6pm <- emap %>%
+  filter(gene_id %in% top_6pm) %>%
+  distinct(gene_id, eggNOG.free.text.desc.) %>%
+  arrange(eggNOG.free.text.desc.)
+
+```
+
+#Pulling KOs from BRITE to label the genes on the figure
+```{r}
+library(dplyr)
+library(stringr)
+
+# Your genes of interest
+my_genes <- c(
+  "symbB.v1.2.006106",
+  "symbB.v1.2.039847",
+  "symbB.v1.2.009338",
+  "symbB.v1.2.036498",
+  "symbB.v1.2.007074",
+  "symbB.v1.2.004022",
+  "symbB.v1.2.004674",
+  "symbB.v1.2.005119"
+)
+
+# Filter to just these genes from your emap
+emap_subset <- emap %>%
+  filter(gene_id %in% my_genes & !is.na(BRITE) & BRITE != "") %>%
+  select(gene_id, BRITE)
+
+# Extract most specific KO (last KO in list)
+emap_labeled <- emap_subset %>%
+  rowwise() %>%
+  mutate(
+    brite_kos = str_split(BRITE, ",")[[1]],
+    most_specific_ko = tail(brite_kos, n = 1)
+  ) %>%
+  ungroup()
+
+# View result
+emap_labeled %>%
+  select(gene_id, most_specific_ko)
+
+```
+
+
+############################################################################################################
+###############                       Rhythmic Vs Non BarPlots                               ###############
+############################################################################################################
+
+```{r}
+
+#All filtered genes
+counts_df[keep]
+
+#Take all significant rhythmic genes
+rhythmic <- (rhyLimma %>% filter(adj.P.Val <= 0.01))$gene_id
+
+rhythmic_annot <- inner_join(emap,rhyLimma) %>%   
+                  dplyr::select(gene_id, taxonomic.scope, adj.P.Val, COG_category) %>% 
+                  arrange(adj.P.Val) %>% filter(gene_id %in% rhythmic[l2fc_0.58_pass])
+
+true_rhythmic_genes <- rhythmic_annot %>% 
+                     filter(grepl("Eukaryota", taxonomic.scope))
+
+true_all_genes <- emap %>% 
+                     filter(grepl("Eukaryota", taxonomic.scope))
+
+all_genes_df <- data.frame(
+  category = c("Rhythmic", "Nonrhythmic"),
+  count = c(7999, 29526 - 7999),  # rhythmic, nonrhythmic
+  group = "All Transcripts"
+)
+
+annotated_genes_df <- data.frame(
+  category = c("Rhythmic", "Nonrhythmic"),
+  count = c(71, 7388),  # annotated rhythmic and nonrhythmic
+  group = "Annotated Transcripts"
+)
+
+# Combine and convert to proportion
+barplot_df <- bind_rows(all_genes_df, annotated_genes_df) %>%
+  group_by(group) %>%
+  mutate(prop = count / sum(count))
+
+# Plot
+ggplot(barplot_df, aes(x = group, y = prop, fill = category, alpha = group)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c(
+  "Rhythmic" = "#1f78b4",       # vibrant blue
+  "Nonrhythmic" = "#999999"     # neutral gray
+)) +
+  scale_alpha_manual(values = c(
+    "All Transcripts" = 0.75,         # lighter
+    "Annotated Transcripts" = 1.0    # full opacity
+  )) +
+  labs(y = "Proportion", x = "", fill = "Category") +
+  guides(alpha = "none") +  # optional: hides alpha legend
+  theme_minimal()
+
+
+
+true_rhythmic_cogs <- true_rhythmic_genes %>%
+  mutate(COG_category = strsplit(as.character(COG_category), "")) %>%
+  unnest(COG_category)  %>%
+  filter(COG_category != "", COG_category != "-")
+
+cog_summary <- true_rhythmic_cogs %>%
+  count(COG_category) %>%
+  mutate(prop = n / sum(n))
+
+cog_colours <- c(
+  "A" = "#DE5D64",  # RNA processing and modification
+  "B" = "#AEE5D4",  # Chromatin structure and dynamics
+  "C" = "#B888E1",  # Energy production and conversion
+  "D" = "#DD56DC",  # Cell cycle control, cell division
+  "E" = "#DEDBDF",  # Amino acid transport and metabolism
+  "F" = "#8646E7",  # Nucleotide transport and metabolism
+  "G" = "#6FE762",  # Carbohydrate transport and metabolism
+  "H" = "#D5BC60",  # Coenzyme transport and metabolism
+  "I" = "#D75DAC",  # Lipid transport and metabolism
+  "J" = "#5EA6B3",  # Translation, ribosomal structure
+  "K" = "#E0E5B5",  # Transcription
+  "L" = "#CFE644",  # Replication, recombination and repair
+  "M" = "#AAA38C",  # Cell wall/membrane/envelope biogenesis
+  "N" = "#CDB7E3",  # Cell motility
+  "O" = "#72E1E8",  # Posttranslational modification
+  "P" = "#E8AD9D",  # Inorganic ion transport and metabolism
+  "Q" = "#7AB1E5",  # Secondary metabolites biosynthesis
+  "R" = "#ff7f00",  # General function prediction
+  "S" = "#72A667",  # General function prediction
+  "T" = "#926F8C",  # Function unknown
+  "U" = "#D38646",  # Signal transduction
+  "V" = "#78E9B1",  # Intracellular trafficking
+  "W" = "#E99BCA",  # Defense mechanisms
+  "X" = "#CCE784",  # Extracellular structures
+  "Z" = "#5C72D0"   # Cytoskeleton
+)
+
+
+ggplot(cog_summary, aes(x = "Rhythmic Annotated Genes", y = prop, fill = COG_category)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = cog_colours) +
+  labs(x = "", y = "Proportion", fill = "COG Category") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+
+# Rename columns to match barplot_df
+cog_summary_bar <- cog_summary %>%
+  rename(category = COG_category) %>%
+  mutate(group = "Rhythmic COGs")
+
+combined_df <- bind_rows(barplot_df, cog_summary_bar)
+
+gene_summmary_barplot <- ggplot(combined_df, aes(x = group, y = prop, fill = category)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c(
+    "Rhythmic" = "#1f78b4",
+    "Nonrhythmic" = "#999999",
+    cog_colours  # will add all COG colors automatically
+  )) +
+  labs(y = "Proportion", x = "", fill = "Category") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+
+pdf("/path/to/data/analysis/pstr_rnaseq_diel/gene_symb_summary_barplot_COGS.pdf", width = 6, height = 6)
+gene_summmary_barplot
+dev.off()
+```
+
+
